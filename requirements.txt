@@ -1,0 +1,7 @@
+Flask
+twilio
+python-dotenv
+SQLAlchemy
+psycopg2-binary
+razorpay
+gunicorn
