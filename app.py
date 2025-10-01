@@ -47,16 +47,20 @@ def get_customer(phone_number):
 
 
 def mark_emi_paid(phone_number):
+    """Update EMI status in DB and commit"""
     try:
+        # Normalize number
+        if not phone_number.startswith("+"):
+            phone_number = "+91" + phone_number.lstrip("0")
         with engine.begin() as conn:  # auto commit
             stmt = update(customers).where(customers.c.phone == phone_number).values(payment_status="Paid")
             result = conn.execute(stmt)
             if result.rowcount == 0:
-                print(f"No customer found with phone {phone_number}")
+                logging.warning(f"No customer found with phone {phone_number}")
             else:
-                print(f"EMI marked as paid for {phone_number}")
-    except Exception as e:
-        print(f"Failed to update EMI status: {e}")
+                logging.info(f"EMI marked as paid for {phone_number}")
+    except Exception:
+        logging.exception("Failed to update EMI status")
 
 
 
