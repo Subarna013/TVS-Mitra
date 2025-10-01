@@ -137,8 +137,12 @@ def handle_key():
 
         elif digit == "2":
             if customer:
-                mark_emi_paid(customer['phone'])  # use phone from DB row
+                # Use the phone from DB to guarantee correct match
+                mark_emi_paid(customer['phone'])
                 resp.say("Thank you. Your EMI has been marked as paid.")
+            else:
+                resp.say("We could not find your record. Please contact support.")
+
 
 
         elif digit == "3":
