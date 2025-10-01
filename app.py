@@ -137,10 +137,8 @@ def handle_key():
 
         elif digit == "2":
             if customer:
-                mark_emi_paid(customer['phone'])  # Use normalized DB phone
+                mark_emi_paid(customer['phone'])  # use phone from DB row
                 resp.say("Thank you. Your EMI has been marked as paid.")
-            else:
-                resp.say("We could not find your record. Please contact support.")
 
 
         elif digit == "3":
