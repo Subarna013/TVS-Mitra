@@ -7,6 +7,7 @@ from twilio.rest import Client
 from sqlalchemy import create_engine, Table, MetaData, select, update
 import razorpay
 from dotenv import load_dotenv
+from datetime import date
 
 # ------------------ SETUP ------------------
 load_dotenv()
@@ -32,10 +33,9 @@ customers = Table('customers', metadata, autoload_with=engine)
 # ------------------ HELPERS ------------------
 def get_customer(phone_number):
     """Fetch customer from DB by phone number, normalized"""
+    if not phone_number.startswith("+"):
+        phone_number = "+91" + phone_number.lstrip("0")
     try:
-        # Ensure phone number is in standard format
-        if not phone_number.startswith("+"):
-            phone_number = "+91" + phone_number.lstrip("0")
         with engine.connect() as conn:
             query = select(customers).where(customers.c.phone == phone_number)
             row = conn.execute(query).fetchone()
@@ -45,13 +45,11 @@ def get_customer(phone_number):
         logging.exception("Error fetching customer from DB")
         return None
 
-
 def mark_emi_paid(phone_number):
     """Update EMI status in DB and commit"""
+    if not phone_number.startswith("+"):
+        phone_number = "+91" + phone_number.lstrip("0")
     try:
-        # Normalize number
-        if not phone_number.startswith("+"):
-            phone_number = "+91" + phone_number.lstrip("0")
         with engine.begin() as conn:  # auto commit
             stmt = update(customers).where(customers.c.phone == phone_number).values(payment_status="Paid")
             result = conn.execute(stmt)
@@ -61,8 +59,6 @@ def mark_emi_paid(phone_number):
                 logging.info(f"EMI marked as paid for {phone_number}")
     except Exception:
         logging.exception("Failed to update EMI status")
-
-
 
 def create_razorpay_payment_link(customer_name, customer_contact, amount_rupees):
     """Create Razorpay payment link"""
@@ -88,6 +84,30 @@ def create_razorpay_payment_link(customer_name, customer_contact, amount_rupees)
     except Exception:
         logging.exception("Failed to create Razorpay link")
         return None
+
+# ------------------ RISK SCORING ------------------
+def calculate_risk_score(customer):
+    """Compute a risk score for priority calling"""
+    score = 0
+    if customer.due_date:
+        overdue_days = (date.today() - customer.due_date).days
+        score += max(overdue_days, 0)
+    if customer.emi_amount:
+        score += float(customer.emi_amount) / 1000  # weighted by EMI amount
+    # Add more rules if needed, e.g., past default history
+    return score
+
+def get_pending_customers_sorted():
+    """Return pending customers sorted by risk descending"""
+    try:
+        with engine.connect() as conn:
+            query = select(customers).where(customers.c.payment_status=="Pending")
+            rows = conn.execute(query).fetchall()
+            sorted_customers = sorted(rows, key=calculate_risk_score, reverse=True)
+            return sorted_customers
+    except Exception:
+        logging.exception("Error fetching pending customers")
+        return []
 
 # ------------------ FLASK APP ------------------
 app = Flask(__name__)
@@ -118,32 +138,34 @@ def handle_key():
 
         customer = get_customer(caller_number)
 
+        if not customer:
+            resp.say("We could not find your record. Please contact support.")
+            resp.hangup()
+            return Response(str(resp), mimetype="text/xml")
+
+        # Pre-call verification: skip if already paid
+        if customer.payment_status == "Paid":
+            resp.say("Our records show your EMI is already paid. Thank you!")
+            resp.hangup()
+            return Response(str(resp), mimetype="text/xml")
+
         if digit == "1":
-            if customer:
-                payment_link = create_razorpay_payment_link(
-                    customer_name=customer['name'],
-                    customer_contact=customer['phone'],
-                    amount_rupees=customer['emi_amount']
-                )
-                message_body = f"Hello {customer['name']}! Pay your EMI here: {payment_link or 'https://example.com/pay'}"
-                twilio_client.messages.create(
-                    to=customer['phone'],
-                    from_=twilio_number,
-                    body=message_body
-                )
-                resp.say("Payment link sent via SMS. Thank you!")
-            else:
-                resp.say("We could not find your record. Please contact support.")
+            payment_link = create_razorpay_payment_link(
+                customer_name=customer['name'],
+                customer_contact=customer['phone'],
+                amount_rupees=customer['emi_amount']
+            )
+            message_body = f"Hello {customer['name']}! Pay your EMI here: {payment_link or 'https://example.com/pay'}"
+            twilio_client.messages.create(
+                to=customer['phone'],
+                from_=twilio_number,
+                body=message_body
+            )
+            resp.say("Payment link sent via SMS. Thank you!")
 
         elif digit == "2":
-            if customer:
-                # Use the phone from DB to guarantee correct match
-                mark_emi_paid(customer['phone'])
-                resp.say("Thank you. Your EMI has been marked as paid.")
-            else:
-                resp.say("We could not find your record. Please contact support.")
-
-
+            mark_emi_paid(customer['phone'])
+            resp.say("Thank you. Your EMI has been marked as paid.")
 
         elif digit == "3":
             resp.say("Please wait while we connect you to an agent.")
@@ -151,6 +173,7 @@ def handle_key():
 
         else:
             resp.say("Invalid input. Goodbye.")
+
         resp.hangup()
         return Response(str(resp), mimetype="text/xml")
 
