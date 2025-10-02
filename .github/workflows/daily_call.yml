@@ -2,9 +2,8 @@ name: Daily TVS Mitra Calls
 
 on:
   schedule:
-    # Run every day at 10 AM IST
-    - cron: '30 4 * * *'  # UTC time: 4:30 AM = 10 AM IST
-  workflow_dispatch: # allows manual trigger too
+    - cron: "0 10 * * *"   # every day at 10 AM UTC (3:30 PM IST)
+  workflow_dispatch:        # allow manual trigger
 
 jobs:
   call-customers:
@@ -17,18 +16,29 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run first_call.py
+      - name: Debug Environment
+        run: |
+          echo "BOT_URL=$BOT_URL"
+          echo "TWILIO_ACCOUNT_SID length: ${#TWILIO_ACCOUNT_SID}"
+          echo "DB URL starts with: ${DATABASE_URL:0:15}"
         env:
+          BOT_URL: ${{ secrets.BOT_URL }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Run call script
+        run: python first_call.py
+        env:
+          BOT_URL: ${{ secrets.BOT_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MY_NUMBER: ${{ secrets.MY_NUMBER }}
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
           TWILIO_PHONE_NUMBER: ${{ secrets.TWILIO_PHONE_NUMBER }}
-          BOT_URL: ${{ secrets.BOT_URL }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python first_call.py
