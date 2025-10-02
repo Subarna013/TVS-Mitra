@@ -1,0 +1,34 @@
+name: Daily TVS Mitra Calls
+
+on:
+  schedule:
+    # Run every day at 10 AM IST
+    - cron: '30 4 * * *'  # UTC time: 4:30 AM = 10 AM IST
+  workflow_dispatch: # allows manual trigger too
+
+jobs:
+  call-customers:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run first_call.py
+        env:
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_PHONE_NUMBER: ${{ secrets.TWILIO_PHONE_NUMBER }}
+          BOT_URL: ${{ secrets.BOT_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python first_call.py
