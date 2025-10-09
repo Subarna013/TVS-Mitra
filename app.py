@@ -85,30 +85,6 @@ def create_razorpay_payment_link(customer_name, customer_contact, amount_rupees)
         logging.exception("Failed to create Razorpay link")
         return None
 
-# ------------------ RISK SCORING ------------------
-def calculate_risk_score(customer):
-    """Compute a risk score for priority calling"""
-    score = 0
-    if customer.due_date:
-        overdue_days = (date.today() - customer.due_date).days
-        score += max(overdue_days, 0)
-    if customer.emi_amount:
-        score += float(customer.emi_amount) / 1000  # weighted by EMI amount
-    # Add more rules if needed, e.g., past default history
-    return score
-
-def get_pending_customers_sorted():
-    """Return pending customers sorted by risk descending"""
-    try:
-        with engine.connect() as conn:
-            query = select(customers).where(customers.c.payment_status=="Pending")
-            rows = conn.execute(query).fetchall()
-            sorted_customers = sorted(rows, key=calculate_risk_score, reverse=True)
-            return sorted_customers
-    except Exception:
-        logging.exception("Error fetching pending customers")
-        return []
-
 # ------------------ FLASK APP ------------------
 app = Flask(__name__)
 
