@@ -32,7 +32,7 @@ customers = Table("customers", metadata, autoload_with=engine)
 
 # ------------------ HELPERS ------------------
 def get_customer(phone_number: str):
-    """Fetch customer by phone number."""
+    """Fetch customer by phone number, return dict-like row."""
     if not phone_number:
         return None
     if not phone_number.startswith("+"):
@@ -40,8 +40,9 @@ def get_customer(phone_number: str):
 
     try:
         with engine.connect() as conn:
+            # ✅ mappings() makes row behave like a dict
             query = select(customers).where(customers.c.phone == phone_number)
-            row = conn.execute(query).fetchone()
+            row = conn.execute(query).mappings().fetchone()
             logging.info(f"Fetched customer for {phone_number}: {row}")
             return row
     except Exception:
@@ -125,7 +126,7 @@ def handle_key():
             return Response(str(resp), mimetype="text/xml")
 
         # Skip if already paid
-        if customer.payment_status == "Paid":
+        if customer["payment_status"] == "Paid":
             resp.say("Our records show your EMI is already paid. Thank you!")
             resp.hangup()
             return Response(str(resp), mimetype="text/xml")
