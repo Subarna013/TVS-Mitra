@@ -1,45 +1,28 @@
-# db_check.py
-from sqlalchemy import create_engine, Table, MetaData, select
-from dotenv import load_dotenv
 import os
+from sqlalchemy import create_engine, Table, Column, Integer, String, Numeric, Date, MetaData
+from dotenv import load_dotenv
 
-# ------------------ LOAD ENV ------------------
+# Load environment variables from .env
 load_dotenv()
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL")  # This should be set in Render's environment
 
-if not DATABASE_URL:
-    raise RuntimeError("❌ DATABASE_URL not set in environment variables")
-
-# ------------------ DB SETUP ------------------
+# Connect to the database
 engine = create_engine(DATABASE_URL)
 metadata = MetaData()
-metadata.reflect(bind=engine)
 
-customers = Table('customers', metadata, autoload_with=engine)
-call_logs = Table('call_logs', metadata, autoload_with=engine)
+# Define customers table
+customers = Table(
+    'customers', metadata,
+    Column('id', Integer, primary_key=True),
+    Column('name', String, nullable=False),
+    Column('phone', String, unique=True, nullable=False),
+    Column('emi_amount', Numeric),
+    Column('due_date', Date),
+    Column('payment_status', String, default='Pending'),
+    Column('last_call_status', String)
+)
 
-# ------------------ QUERIES ------------------
-with engine.connect() as conn:
-    print("=== CUSTOMERS ===")
-    query = select(customers.c.id, customers.c.name, customers.c.phone, customers.c.payment_status)
-    results = conn.execute(query).fetchall()
-    for row in results:
-        print(f"ID={row.id}, Name={row.name}, Phone={row.phone}, Status={row.payment_status}")
+# Create table if it doesn't exist
+metadata.create_all(engine)
 
-    print("\n=== RECENT CALL LOGS (last 20) ===")
-    query = select(
-        call_logs.c.id,
-        call_logs.c.customer_id,
-        call_logs.c.phone,
-        call_logs.c.action,
-        call_logs.c.outcome,
-        call_logs.c.payment_link,
-        call_logs.c.created_at
-    ).order_by(call_logs.c.created_at.desc()).limit(20)
-
-    results = conn.execute(query).fetchall()
-    for row in results:
-        print(
-            f"LogID={row.id}, CustID={row.customer_id}, Phone={row.phone}, "
-            f"Action={row.action}, Outcome={row.outcome}, Link={row.payment_link}, Time={row.created_at}"
-        )
+print(f"✅ Database and table 'customers' created successfully in {DATABASE_URL}")
