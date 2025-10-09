@@ -7,7 +7,6 @@ from twilio.rest import Client
 from sqlalchemy import create_engine, Table, MetaData, select, update
 import razorpay
 from dotenv import load_dotenv
-from datetime import date
 
 # ------------------ SETUP ------------------
 load_dotenv()
@@ -28,40 +27,46 @@ rzp_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL)
 metadata = MetaData()
-customers = Table('customers', metadata, autoload_with=engine)
+metadata.reflect(bind=engine)
+customers = Table("customers", metadata, autoload_with=engine)
 
 # ------------------ HELPERS ------------------
-def get_customer(phone_number):
-    """Fetch customer from DB by phone number, normalized"""
+def get_customer(phone_number: str):
+    """Fetch customer by phone number."""
+    if not phone_number:
+        return None
     if not phone_number.startswith("+"):
         phone_number = "+91" + phone_number.lstrip("0")
+
     try:
         with engine.connect() as conn:
             query = select(customers).where(customers.c.phone == phone_number)
             row = conn.execute(query).fetchone()
-            logging.info(f"Fetched customer: {row}")
+            logging.info(f"Fetched customer for {phone_number}: {row}")
             return row
     except Exception:
         logging.exception("Error fetching customer from DB")
         return None
 
-def mark_emi_paid(phone_number):
-    """Update EMI status in DB and commit"""
+
+def mark_emi_paid(phone_number: str):
+    """Update EMI status in DB."""
     if not phone_number.startswith("+"):
         phone_number = "+91" + phone_number.lstrip("0")
     try:
-        with engine.begin() as conn:  # auto commit
+        with engine.begin() as conn:
             stmt = update(customers).where(customers.c.phone == phone_number).values(payment_status="Paid")
             result = conn.execute(stmt)
             if result.rowcount == 0:
                 logging.warning(f"No customer found with phone {phone_number}")
             else:
-                logging.info(f"EMI marked as paid for {phone_number}")
+                logging.info(f"✅ EMI marked as paid for {phone_number}")
     except Exception:
         logging.exception("Failed to update EMI status")
 
+
 def create_razorpay_payment_link(customer_name, customer_contact, amount_rupees):
-    """Create Razorpay payment link"""
+    """Generate Razorpay payment link."""
     try:
         amount_paise = int(round(float(amount_rupees) * 100))
         payload = {
@@ -69,17 +74,13 @@ def create_razorpay_payment_link(customer_name, customer_contact, amount_rupees)
             "currency": "INR",
             "accept_partial": False,
             "description": f"EMI payment for {customer_name}",
-            "customer": {
-                "name": customer_name,
-                "contact": customer_contact,
-                "email": "test@example.com"
-            },
+            "customer": {"name": customer_name, "contact": customer_contact, "email": "test@example.com"},
             "notify": {"sms": True, "email": False},
             "reminder_enable": True
         }
         resp = rzp_client.payment_link.create(payload)
         link = resp.get("short_url") or resp.get("shortLink")
-        logging.info(f"Razorpay link created: {link}")
+        logging.info(f"✅ Razorpay link created: {link}")
         return link
     except Exception:
         logging.exception("Failed to create Razorpay link")
@@ -92,7 +93,7 @@ app = Flask(__name__)
 @app.route("/voice", methods=["POST"])
 def voice():
     resp = VoiceResponse()
-    gather = Gather(num_digits=1, action='/handle-key', method='POST')
+    gather = Gather(num_digits=1, action="/handle-key", method="POST")
     gather.say(
         "Welcome to TVS Mitra. "
         "Press 1 to receive your EMI payment link via SMS. "
@@ -100,7 +101,7 @@ def voice():
         "Press 3 to speak with an agent."
     )
     resp.append(gather)
-    resp.redirect('/voice')  # repeat if no input
+    resp.redirect("/voice")  # Repeat if no input
     return Response(str(resp), mimetype="text/xml")
 
 # --------- Handle Key Press ---------
@@ -109,17 +110,21 @@ def handle_key():
     resp = VoiceResponse()
     try:
         digit = request.form.get("Digits")
-        caller_number = request.values.get('From')
-        logging.info(f"Received key: {digit} from {caller_number}")
+        from_number = request.values.get("From")  # Twilio number
+        to_number = request.values.get("To")      # Customer number being called
 
-        customer = get_customer(caller_number)
+        logging.info(f"Digits pressed: {digit}")
+        logging.info(f"FROM (Twilio): {from_number}, TO (Customer): {to_number}")
+
+        # Use customer's number for lookup
+        customer = get_customer(to_number)
 
         if not customer:
             resp.say("We could not find your record. Please contact support.")
             resp.hangup()
             return Response(str(resp), mimetype="text/xml")
 
-        # Pre-call verification: skip if already paid
+        # Skip if already paid
         if customer.payment_status == "Paid":
             resp.say("Our records show your EMI is already paid. Thank you!")
             resp.hangup()
@@ -127,25 +132,25 @@ def handle_key():
 
         if digit == "1":
             payment_link = create_razorpay_payment_link(
-                customer_name=customer['name'],
-                customer_contact=customer['phone'],
-                amount_rupees=customer['emi_amount']
+                customer_name=customer["name"],
+                customer_contact=customer["phone"],
+                amount_rupees=customer["emi_amount"]
             )
             message_body = f"Hello {customer['name']}! Pay your EMI here: {payment_link or 'https://example.com/pay'}"
             twilio_client.messages.create(
-                to=customer['phone'],
+                to=customer["phone"],
                 from_=twilio_number,
                 body=message_body
             )
             resp.say("Payment link sent via SMS. Thank you!")
 
         elif digit == "2":
-            mark_emi_paid(customer['phone'])
+            mark_emi_paid(customer["phone"])
             resp.say("Thank you. Your EMI has been marked as paid.")
 
         elif digit == "3":
             resp.say("Please wait while we connect you to an agent.")
-            resp.dial("+911234567890")  # Replace with real agent number
+            resp.dial("+911234567890")  # Replace with your real agent number
 
         else:
             resp.say("Invalid input. Goodbye.")
@@ -172,9 +177,9 @@ def sms_reply():
             resp.message("Hello! This is TVS Mitra. Reply with 'PAY' to get your EMI payment link.")
         elif body.lower() == "pay" and customer:
             payment_link = create_razorpay_payment_link(
-                customer_name=customer['name'],
-                customer_contact=customer['phone'],
-                amount_rupees=customer['emi_amount']
+                customer_name=customer["name"],
+                customer_contact=customer["phone"],
+                amount_rupees=customer["emi_amount"]
             )
             resp.message(f"Hello {customer['name']}! Pay your EMI here: {payment_link}")
         else:
@@ -188,5 +193,5 @@ def sms_reply():
 # --------- RUN APP ---------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    logging.info(f"Starting Flask app on port {port}")
+    logging.info(f"🚀 Starting Flask app on port {port}")
     app.run(host="0.0.0.0", port=port)
