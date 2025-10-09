@@ -1,8 +1,9 @@
+
 import os
 from twilio.rest import Client
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Table, MetaData, select, update
-from datetime import date, datetime
+from datetime import date
 
 # ------------------ LOAD ENV ------------------
 load_dotenv()
@@ -24,39 +25,16 @@ engine = create_engine(DATABASE_URL)
 metadata = MetaData()
 customers = Table('customers', metadata, autoload_with=engine)
 
-# ------------------ RISK SCORING ------------------
-def calculate_risk_score(customer):
-    """Compute risk score for priority calling"""
-    score = 0
-    try:
-        if customer.due_date:
-            due = customer.due_date
-            if isinstance(due, str):
-                due = datetime.strptime(due, "%Y-%m-%d").date()
-            overdue_days = (date.today() - due).days
-            score += max(overdue_days, 0)
-        if customer.emi_amount:
-            score += float(customer.emi_amount) / 1000  # weight by EMI
-    except Exception as e:
-        print(f"Error calculating risk for {customer.name}: {e}")
-    return score
-
-def get_pending_customers_sorted():
-    """Fetch pending customers sorted by risk descending"""
+# ------------------ MAKE CALLS ------------------
+def call_customers():
     try:
         with engine.connect() as conn:
             query = select(customers).where(customers.c.payment_status == "Pending")
-            rows = conn.execute(query).fetchall()
-            # Sort by risk score descending
-            sorted_customers = sorted(rows, key=calculate_risk_score, reverse=True)
-            return sorted_customers
+            pending_customers = conn.execute(query).fetchall()
     except Exception as e:
         print(f"Error fetching pending customers: {e}")
-        return []
+        pending_customers = []
 
-# ------------------ MAKE CALLS ------------------
-def call_customers():
-    pending_customers = get_pending_customers_sorted()
     if not pending_customers:
         print("No pending customers to call.")
         return
