@@ -220,6 +220,11 @@ def sms_reply():
         return str(MessagingResponse().message("Something went wrong. Please try again later."))
 
 # ------- Run -------
+
+@app.route("/", methods=["GET"])
+def home():
+    return "✅ TVS Mitra v2 is running correctly", 200
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     logging.info(f"🚀 Starting TVS Mitra v2 on port {port}")
