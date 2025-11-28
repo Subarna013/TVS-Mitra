@@ -16,10 +16,13 @@ metadata = MetaData()
 metadata.reflect(bind=engine)
 
 if "customers" not in metadata.tables:
-    raise RuntimeError("❌ 'customers' table not found in database!")
+    raise RuntimeError("❌ 'customers' table not found!")
 
-customers = Table("customers", metadata, autoload_with=engine)
-call_logs = metadata.tables.get("call_logs")  # might not exist yet
+customers = metadata.tables["customers"]
+
+# Check if call_logs table exists
+call_logs_exists = "call_logs" in metadata.tables
+call_logs = metadata.tables.get("call_logs")
 
 # ------------------ QUERIES ------------------
 with engine.connect() as conn:
@@ -35,6 +38,7 @@ with engine.connect() as conn:
     ).order_by(customers.c.id.asc())
 
     results = conn.execute(query).fetchall()
+
     if not results:
         print("No customers found.")
     else:
@@ -45,9 +49,9 @@ with engine.connect() as conn:
                 f"LastCallDate={row.last_call_date}, LastStatus={row.last_call_status}"
             )
 
-    # ----- CALL LOGS -----
     print("\n=== RECENT CALL LOGS (last 20) ===")
-    if not call_logs:
+
+    if not call_logs_exists:
         print("ℹ️ 'call_logs' table does not exist yet.")
     else:
         query = (
@@ -65,6 +69,7 @@ with engine.connect() as conn:
         )
 
         results = conn.execute(query).fetchall()
+
         if not results:
             print("No call logs found.")
         else:
