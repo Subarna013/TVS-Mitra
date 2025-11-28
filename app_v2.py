@@ -107,23 +107,41 @@ def create_razorpay_payment_link(customer_name, customer_contact, amount_rupees)
         logging.info(f"✅ Razorpay link created: {link}")
         return link
     except Exception:
-        logging.exception("Failed to create Razorpay link")
+        logging.exception("❌ Failed to create Razorpay link")
         return None
 
+
 def send_payment_link(customer):
-    """Send Razorpay payment link via Twilio SMS."""
+    """Send Razorpay payment link via Twilio SMS (with fallback + phone normalization)."""
     try:
-        link = create_razorpay_payment_link(customer["name"], customer["phone"], customer["emi_amount"])
-        if link:
-            twilio_client.messages.create(
-                to=customer["phone"],
-                from_=twilio_number,
-                body=f"Hello {customer['name']}, pay your EMI here: {link}"
-            )
+        # ✅ Make sure phone is in +91... format
+        phone = normalize_phone(customer["phone"])
+
+        # 1) Try to create Razorpay link
+        link = create_razorpay_payment_link(
+            customer_name=customer["name"],
+            customer_contact=phone,
+            amount_rupees=customer["emi_amount"]
+        )
+
+        # 2) Fallback link if Razorpay fails
+        if not link:
+            link = "https://example.com/demo-emi-payment"
+            logging.warning("⚠️ Razorpay link failed, using fallback demo link.")
+
+        # 3) Try to send SMS
+        msg = twilio_client.messages.create(
+            to=phone,
+            from_=twilio_number,
+            body=f"Hello {customer['name']}, pay your EMI here: {link}"
+        )
+        logging.info(f"✅ SMS sent from {twilio_number} to {phone}, SID={msg.sid}, link={link}")
         return link
+
     except Exception:
-        logging.exception("Failed to send payment link")
+        logging.exception("❌ Failed to send payment link SMS")
         return None
+
 
 # ------------------ FLASK APP ------------------
 app = Flask(__name__)
@@ -220,7 +238,6 @@ def sms_reply():
         return str(MessagingResponse().message("Something went wrong. Please try again later."))
 
 # ------- Run -------
-
 @app.route("/", methods=["GET"])
 def home():
     return "✅ TVS Mitra v2 is running correctly", 200
