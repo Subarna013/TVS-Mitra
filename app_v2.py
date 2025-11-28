@@ -1,6 +1,6 @@
 import os
 import logging
-from datetime import datetime, date
+from datetime import datetime
 from flask import Flask, request, Response, jsonify
 from twilio.twiml.voice_response import VoiceResponse, Gather
 from twilio.twiml.messaging_response import MessagingResponse
@@ -8,7 +8,8 @@ from twilio.rest import Client
 from sqlalchemy import create_engine, Table, MetaData, select, update, insert
 import razorpay
 from dotenv import load_dotenv
-import hmac, hashlib
+import hmac
+import hashlib
 
 # ------------------ SETUP ------------------
 load_dotenv()
@@ -39,12 +40,13 @@ call_logs = Table("call_logs", metadata, autoload_with=engine)
 def normalize_phone(phone: str):
     if not phone:
         return None
-    phone = phone.strip()
+    phone = phone.strip().replace(" ", "").replace("-", "")
     if phone.startswith("0"):
         phone = phone.lstrip("0")
     if not phone.startswith("+"):
         phone = "+91" + phone.lstrip("+")
     return phone
+
 
 def log_call_entry(phone, action, outcome, payment_link=None, customer_id=None):
     try:
@@ -56,11 +58,12 @@ def log_call_entry(phone, action, outcome, payment_link=None, customer_id=None):
                     action=action,
                     outcome=outcome,
                     payment_link=payment_link,
-                    created_at=datetime.utcnow()
+                    created_at=datetime.utcnow(),
                 )
             )
     except Exception:
         logging.exception("Failed to write call log")
+
 
 def get_customer(phone_number: str):
     """Fetch customer by phone number, return mapping (dict-like)."""
@@ -76,6 +79,7 @@ def get_customer(phone_number: str):
     except Exception:
         logging.exception("Error fetching customer from DB")
         return None
+
 
 def mark_emi_paid(phone_number: str):
     phone = normalize_phone(phone_number)
@@ -94,6 +98,7 @@ def mark_emi_paid(phone_number: str):
     except Exception:
         logging.exception("Failed to mark paid")
         return False
+
 
 def create_razorpay_payment_link(customer_name, customer_contact, amount_rupees):
     """Generate Razorpay payment link."""
@@ -120,10 +125,10 @@ def create_razorpay_payment_link(customer_name, customer_contact, amount_rupees)
         logging.exception("❌ Failed to create Razorpay link")
         return None
 
+
 def send_payment_link(customer):
     """Send Razorpay payment link via Twilio SMS (with fallback + phone normalization)."""
     try:
-        # ✅ Make sure phone is in +91... format
         phone = normalize_phone(customer["phone"])
 
         # 1) Try to create Razorpay link
@@ -138,7 +143,7 @@ def send_payment_link(customer):
             link = "https://example.com/demo-emi-payment"
             logging.warning("⚠️ Razorpay link failed, using fallback demo link.")
 
-        # 3) Try to send SMS
+        # 3) Send SMS
         msg = twilio_client.messages.create(
             to=phone,
             from_=twilio_number,
@@ -153,12 +158,15 @@ def send_payment_link(customer):
         logging.exception("❌ Failed to send payment link SMS")
         return None
 
+
 # ------------------ FLASK APP ------------------
 app = Flask(__name__)
+
 
 @app.before_request
 def log_request():
     logging.info(f"{request.method} {request.path} from {request.remote_addr}")
+
 
 # ------- /voice -------
 @app.route("/voice", methods=["POST", "GET"])
@@ -167,7 +175,7 @@ def voice():
     resp = VoiceResponse()
 
     # ---------------- BUCKET DETECTION ----------------
-    bucket = request.args.get("bucket", "due")  # default = due
+    bucket = request.args.get("bucket", "due")  # "pre_due" or "due"
     logging.info(f"📌 Call bucket = {bucket}")
 
     # ---------------- CUSTOMER CONTEXT ----------------
@@ -249,6 +257,7 @@ def voice():
     logging.info(f"🔊 TwiML returned: {xml_output}")
     return Response(xml_output, mimetype="text/xml")
 
+
 # ------- /handle-key -------
 @app.route("/handle-key", methods=["POST"])
 def handle_key():
@@ -268,6 +277,15 @@ def handle_key():
         if not customer:
             resp.say(
                 "We could not find your record. Please contact support.",
+                voice="alice",
+            )
+            resp.hangup()
+            return Response(str(resp), mimetype="text/xml")
+
+        # Extra safety: if paid between /voice and /handle-key
+        if customer.get("payment_status") == "Paid":
+            resp.say(
+                "Our records now show your EMI is already paid. Thank you.",
                 voice="alice",
             )
             resp.hangup()
@@ -344,6 +362,7 @@ def handle_key():
             mimetype="text/xml",
         )
 
+
 # ------- /sms -------
 @app.route("/sms", methods=["POST"])
 def sms_reply():
@@ -363,6 +382,9 @@ def sms_reply():
             link = create_razorpay_payment_link(
                 customer["name"], customer["phone"], customer["emi_amount"]
             )
+            if not link:
+                link = "https://example.com/demo-emi-payment"
+                logging.warning("⚠️ Razorpay link failed in /sms, using fallback.")
             resp.message(f"Hello {customer['name']}! Pay your EMI here: {link}")
             log_call_entry(
                 customer["phone"],
@@ -385,17 +407,24 @@ def sms_reply():
             )
         )
 
+
 # ------- Healthcheck -------
 @app.route("/", methods=["GET"])
 def home():
     return "✅ TVS Mitra v2 is running correctly", 200
 
+
 # ---- Razorpay webhook --------
 RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET")  # set in .env
+
 
 @app.route("/razorpay/webhook", methods=["POST"])
 def razorpay_webhook():
     try:
+        if not RAZORPAY_WEBHOOK_SECRET:
+            logging.error("RAZORPAY_WEBHOOK_SECRET is not set")
+            return jsonify({"status": "webhook secret not configured"}), 500
+
         payload = request.data
         signature = request.headers.get("X-Razorpay-Signature")
 
@@ -404,7 +433,7 @@ def razorpay_webhook():
             RAZORPAY_WEBHOOK_SECRET.encode(), payload, hashlib.sha256
         ).hexdigest()
 
-        if not hmac.compare_digest(expected, signature):
+        if not hmac.compare_digest(expected, signature or ""):
             logging.warning("⚠️ Invalid Razorpay webhook signature")
             return jsonify({"status": "invalid signature"}), 400
 
@@ -432,6 +461,7 @@ def razorpay_webhook():
     except Exception:
         logging.exception("Error handling Razorpay webhook")
         return jsonify({"status": "error"}), 500
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
