@@ -1,7 +1,7 @@
 import os
 from twilio.rest import Client
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, Table, MetaData, select, update
+from sqlalchemy import create_engine, Table, MetaData, select, update, or_
 from datetime import date, timedelta
 
 # ------------------ LOAD ENV ------------------
@@ -10,11 +10,14 @@ load_dotenv()
 account_sid = os.getenv("TWILIO_ACCOUNT_SID")
 auth_token = os.getenv("TWILIO_AUTH_TOKEN")
 twilio_number = os.getenv("TWILIO_PHONE_NUMBER")
-bot_url = os.getenv("BOT_URL")  # e.g., https://tvs-mitra-1.onrender.com
+bot_url = os.getenv("BOT_URL")        # e.g., https://tvs-mitra-1.onrender.com
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not bot_url:
-    raise ValueError("Please set BOT_URL in your .env file pointing to /voice endpoint.")
+    raise ValueError("❌ Please set BOT_URL in your .env file pointing to the /voice endpoint.")
+
+if not DATABASE_URL:
+    raise RuntimeError("❌ DATABASE_URL not set in environment variables")
 
 # ------------------ INIT CLIENT ------------------
 client = Client(account_sid, auth_token)
@@ -40,20 +43,21 @@ def normalize_phone(phone: str) -> str:
 # ------------------ HELPER: PLACE A CALL ------------------
 def _place_call_to_customer(cust, bucket: str):
     """Place a Twilio call to a single customer row, with pre_due/due bucket."""
+
     # Pre-call verification
     if getattr(cust, "payment_status", None) == "Paid":
-        print(f"Skipping {cust.name}, EMI already paid.")
+        print(f"⏭️ Skipping {cust.name}, EMI already paid.")
         return
 
     # Avoid calling more than once per day
     if getattr(cust, "last_call_date", None) == date.today():
-        print(f"Skipping {cust.name}, already called today.")
+        print(f"⏭️ Skipping {cust.name}, already called today.")
         return
 
     # Normalize phone number
     phone = normalize_phone(cust.phone)
     if not phone:
-        print(f"Skipping {cust.name}, invalid phone.")
+        print(f"⏭️ Skipping {cust.name}, invalid phone.")
         return
 
     try:
@@ -61,10 +65,10 @@ def _place_call_to_customer(cust, bucket: str):
         call = client.calls.create(
             to=phone,
             from_=twilio_number,
-            url=f"{bot_url}/voice?bucket={bucket}"
+            url=f"{bot_url}/voice?bucket={bucket}",
         )
         print(
-            f"[{bucket.upper()}] Call initiated to {cust.name} ({phone}) | "
+            f"[{bucket.upper()}] 📞 Call initiated to {cust.name} ({phone}) | "
             f"SID: {call.sid}"
         )
 
@@ -78,7 +82,7 @@ def _place_call_to_customer(cust, bucket: str):
             conn.execute(stmt)
 
     except Exception as e:
-        print(f"[{bucket.upper()}] Failed to call {cust.name} ({phone}): {str(e)}")
+        print(f"[{bucket.upper()}] ❌ Failed to call {cust.name} ({phone}): {str(e)}")
 
 
 # ------------------ MAKE CALLS ------------------
@@ -96,19 +100,24 @@ def call_customers():
             )
             pre_due_customers = conn.execute(pre_due_query).fetchall()
 
-            # 2) DUE / OVERDUE: EMI due today or earlier
+            # 2) DUE / OVERDUE:
+            #    - EMI due today or earlier
+            #    - OR due_date is NULL (treat as DUE so they are not ignored)
             due_query = select(customers).where(
                 customers.c.payment_status == "Pending",
-                customers.c.due_date <= today,
+                or_(
+                    customers.c.due_date <= today,
+                    customers.c.due_date.is_(None),
+                ),
             )
             due_customers = conn.execute(due_query).fetchall()
 
     except Exception as e:
-        print(f"Error fetching customers: {e}")
+        print(f"❌ Error fetching customers: {e}")
         return
 
     if not pre_due_customers and not due_customers:
-        print("No pending customers to call (pre-due or due).")
+        print("ℹ️ No pending customers to call (pre-due or due).")
         return
 
     # --------- Pass 1: PRE-DUE REMINDERS ----------
@@ -117,7 +126,7 @@ def call_customers():
         for cust in pre_due_customers:
             _place_call_to_customer(cust, bucket="pre_due")
     else:
-        print("No pre-due customers to call.")
+        print("ℹ️ No pre-due customers to call.")
 
     # --------- Pass 2: DUE / OVERDUE COLLECTIONS ----------
     if due_customers:
@@ -125,7 +134,7 @@ def call_customers():
         for cust in due_customers:
             _place_call_to_customer(cust, bucket="due")
     else:
-        print("No due/overdue customers to call.")
+        print("ℹ️ No due/overdue customers to call.")
 
 
 # ------------------ SINGLE CALL FUNCTION ------------------
@@ -137,7 +146,7 @@ def make_call_to_customer(phone_number, bucket: str = "manual"):
         from_=twilio_number,
         url=f"{bot_url}/voice?bucket={bucket}",
     )
-    print(f"Call initiated successfully to {phone}, SID: {call.sid}")
+    print(f"📞 Manual call initiated to {phone}, SID: {call.sid}")
 
 
 # ------------------ MAIN ------------------
