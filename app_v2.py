@@ -396,34 +396,12 @@ def sms_reply():
         from_number = request.form.get("From")
         logging.info(f"Incoming SMS from {from_number}: {body}")
 
+        reply_text = handle_text_message(body, from_number)
+
         resp = MessagingResponse()
-        customer = get_customer(from_number)
-
-        if body.lower() in ["hi", "hello"]:
-            resp.message(
-                "Hello! This is TVS Mitra. Reply with 'PAY' to get your EMI payment link."
-            )
-        elif body.lower() == "pay" and customer:
-            link = create_razorpay_payment_link(
-                customer["name"], customer["phone"], customer["emi_amount"]
-            )
-            if not link:
-                link = "https://example.com/demo-emi-payment"
-                logging.warning("⚠️ Razorpay link failed in /sms, using fallback.")
-            resp.message(f"Hello {customer['name']}! Pay your EMI here: {link}")
-            log_call_entry(
-                customer["phone"],
-                "sms_pay_request",
-                "link_sent" if link else "link_failed",
-                payment_link=link,
-                customer_id=customer["id"],
-            )
-        else:
-            resp.message(
-                "Sorry, I didn’t understand. Reply with 'PAY' to get your EMI link."
-            )
-
+        resp.message(reply_text)
         return str(resp)
+
     except Exception:
         logging.exception("Error in /sms endpoint")
         return str(
@@ -431,7 +409,6 @@ def sms_reply():
                 "Something went wrong. Please try again later."
             )
         )
-
 
 # ------- Healthcheck -------
 @app.route("/", methods=["GET"])
