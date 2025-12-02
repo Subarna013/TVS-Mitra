@@ -10,6 +10,8 @@ import razorpay
 from dotenv import load_dotenv
 import hmac
 import hashlib
+from openai import OpenAI
+
 
 # ------------------ SETUP ------------------
 load_dotenv()
@@ -25,6 +27,10 @@ twilio_client = Client(twilio_sid, twilio_token)
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
 rzp_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+
+# OpenAI client
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+llm_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # Database setup
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -157,6 +163,63 @@ def send_payment_link(customer):
     except Exception:
         logging.exception("❌ Failed to send payment link SMS")
         return None
+
+def llm_fallback_reply(user_text: str, customer: dict | None) -> str:
+    """
+    Use OpenAI LLM to answer any general query:
+    - typos, chit-chat, doubts, etc.
+    """
+    if not llm_client:
+        # If key not configured, at least say something nice
+        return (
+            "I'm still learning to handle more questions. "
+            "For now, you can type 'PAY', 'STATUS', 'WHY SHOULD I PAY', "
+            "'I ALREADY PAID', or 'AGENT'."
+        )
+
+    # Build some safe context for the model
+    customer_context = ""
+    if customer:
+        status = customer.get("payment_status")
+        emi_amount = customer.get("emi_amount")
+        due_date = customer.get("due_date")
+        customer_context = (
+            f"Customer EMI summary:\n"
+            f"- Status: {status}\n"
+            f"- EMI amount: {emi_amount}\n"
+            f"- Due date: {due_date}\n"
+        )
+
+    system_prompt = (
+        "You are TVS Mitra, an EMI collections assistant for TVS Credit.\n"
+        "Tone: polite, professional, friendly.\n"
+        "You can clarify EMI queries, explain why payment is due, and answer general, "
+        "harmless small-talk (like 'I love you') in a friendly but neutral way.\n"
+        "IMPORTANT RULES:\n"
+        "- Do NOT say that the EMI is paid or cleared unless the status from context is 'Paid'.\n"
+        "- Do NOT invent any payment references or promises from TVS Credit.\n"
+        "- If the user asks to change or cancel EMIs, say that an agent/human will help and "
+        "suggest contacting customer support.\n"
+        "- Keep answers short and clear (1–3 sentences).\n"
+    )
+
+    try:
+        resp = llm_client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": customer_context + "\nUser message: " + user_text},
+            ],
+            max_tokens=200,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        logging.exception("LLM fallback failed")
+        return (
+            "I'm sorry, I couldn't process that right now. "
+            "You can type 'PAY', 'STATUS', 'WHY SHOULD I PAY', "
+            "'I ALREADY PAID', or 'AGENT' for quick options."
+        )
 
 
 def handle_text_message(body: str, from_number: str) -> str:
@@ -291,13 +354,8 @@ def handle_text_message(body: str, from_number: str) -> str:
         )
 
     # -------- 7) FALLBACK --------
-    return (
-        "Sorry, I didn’t fully understand that.\n"
-        "- Type 'PAY' to get your EMI link\n"
-        "- Type 'STATUS' to check your EMI details\n"
-        "- Type 'HELP' to see all options\n"
-    )
-
+    # -------- 7) FALLBACK → send to LLM --------
+    return llm_fallback_reply(body, customer)
 
 # ------------------ FLASK APP ------------------
 app = Flask(__name__)
