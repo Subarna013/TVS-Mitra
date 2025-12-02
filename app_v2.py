@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 import hmac
 import hashlib
 from openai import OpenAI
+llm_client = None  # temporarily disable OpenAI calls (no quota)
+import difflib
 
 
 # ------------------ SETUP ------------------
@@ -166,66 +168,26 @@ def send_payment_link(customer):
 
 def llm_fallback_reply(user_text: str, customer: dict | None) -> str:
     """
-    Use OpenAI LLM to answer any general query:
-    - typos, chit-chat, doubts, etc.
+    Fallback reply when no specific rule matched.
+    This version does NOT call OpenAI (no quota).
     """
-    if not llm_client:
-        # If key not configured, at least say something nice
-        return (
-            "I'm still learning to handle more questions. "
-            "For now, you can type 'PAY', 'STATUS', 'WHY SHOULD I PAY', "
-            "'I ALREADY PAID', or 'AGENT'."
-        )
-
-    # Build some safe context for the model
-    customer_context = ""
-    if customer:
-        status = customer.get("payment_status")
-        emi_amount = customer.get("emi_amount")
-        due_date = customer.get("due_date")
-        customer_context = (
-            f"Customer EMI summary:\n"
-            f"- Status: {status}\n"
-            f"- EMI amount: {emi_amount}\n"
-            f"- Due date: {due_date}\n"
-        )
-
-    system_prompt = (
-        "You are TVS Mitra, an EMI collections assistant for TVS Credit.\n"
-        "Tone: polite, professional, friendly.\n"
-        "You can clarify EMI queries, explain why payment is due, and answer general, "
-        "harmless small-talk (like 'I love you') in a friendly but neutral way.\n"
-        "IMPORTANT RULES:\n"
-        "- Do NOT say that the EMI is paid or cleared unless the status from context is 'Paid'.\n"
-        "- Do NOT invent any payment references or promises from TVS Credit.\n"
-        "- If the user asks to change or cancel EMIs, say that an agent/human will help and "
-        "suggest contacting customer support.\n"
-        "- Keep answers short and clear (1–3 sentences).\n"
+    # You can customise this message a bit using context
+    base = (
+        "I'm still learning to handle more questions. "
+        "Right now I can help you with your EMI basics.\n"
+        "- Type 'PAY' to get your EMI link\n"
+        "- Type 'STATUS' to see EMI amount and status\n"
+        "- Type 'WHY SHOULD I PAY' to understand your EMI\n"
+        "- Type 'I ALREADY PAID' if you've already paid\n"
+        "- Type 'AGENT' to talk to a human\n"
     )
-
-    try:
-        resp = llm_client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": customer_context + "\nUser message: " + user_text},
-            ],
-            max_tokens=200,
-        )
-        return resp.choices[0].message.content.strip()
-    except Exception as e:
-        logging.exception("LLM fallback failed")
-        return (
-            "I'm sorry, I couldn't process that right now. "
-            "You can type 'PAY', 'STATUS', 'WHY SHOULD I PAY', "
-            "'I ALREADY PAID', or 'AGENT' for quick options."
-        )
-
+    return base
 
 def handle_text_message(body: str, from_number: str) -> str:
     """
     Common handler for SMS + Web chat messages.
-    Smart rule-based NLP: PAY / STATUS / WHY / ALREADY PAID / AGENT / HELP / DOUBT.
+    Smart rule-based NLP: PAY / STATUS / WHY / ALREADY PAID / AGENT / HELP / DOUBT
+    + small-talk + typo handling.
     """
     text = (body or "").strip().lower()
     customer = get_customer(from_number)
@@ -252,7 +214,14 @@ def handle_text_message(body: str, from_number: str) -> str:
             "- 'AGENT' → ask for a human to call you\n"
         )
 
-    # If we don't find the customer, still try to answer basic stuff
+    # -------- 💬 Small-talk / fun replies --------
+    if "love you" in text or "luv u" in text or "i love u" in text:
+        return "Haha, I'm just your TVS Mitra EMI assistant, but I'm always here to help you 🤝"
+
+    if "joke" in text or "funny" in text or "laugh" in text:
+        return "Here’s a finance joke: Why did the EMI go to school? To become a little more payable every month. 😄"
+
+    # -------- Customer not found --------
     if not customer:
         if "why" in text and "pay" in text:
             return (
@@ -292,8 +261,12 @@ def handle_text_message(body: str, from_number: str) -> str:
 
         return f"Hello {customer['name']}! Pay your EMI here: {link}"
 
-    # -------- 2) STATUS --------
-    if "status" in text or ("emi" in text and "status" in text):
+    # -------- 2) STATUS (with typo tolerance: sdatus, sttaus, etc.) --------
+    words = text.split()
+    close_to_status = any(
+        difflib.get_close_matches(w, ["status"], cutoff=0.7) for w in words
+    )
+    if "status" in text or close_to_status:
         msg = f"EMI status for {customer['name']}:\n"
         if emi_amount is not None:
             msg += f"- EMI Amount: ₹{emi_amount}\n"
@@ -339,7 +312,6 @@ def handle_text_message(body: str, from_number: str) -> str:
 
     # -------- 5) AGENT / HUMAN --------
     if "agent" in text or "human" in text or "call me" in text or "customer care" in text:
-        # You could also insert a call_logs entry here like 'text_agent_request'
         return (
             "Okay, we will arrange for an agent to contact you on your registered number. "
             "For urgent help, please call our customer support helpline."
@@ -353,9 +325,9 @@ def handle_text_message(body: str, from_number: str) -> str:
             "For detailed queries, type 'AGENT' and a human will assist you."
         )
 
-    # -------- 7) FALLBACK --------
-    # -------- 7) FALLBACK → send to LLM --------
+    # -------- 7) FALLBACK → simple reply (no LLM) --------
     return llm_fallback_reply(body, customer)
+
 
 # ------------------ FLASK APP ------------------
 app = Flask(__name__)
