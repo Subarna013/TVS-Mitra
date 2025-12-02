@@ -465,6 +465,103 @@ def razorpay_webhook():
         return jsonify({"status": "error"}), 500
 
 
+
+CHAT_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>TVS Mitra Chat</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background:#f3f4f6; margin:0; padding:0; display:flex; justify-content:center; align-items:center; height:100vh;}
+    .chat-container { width: 360px; max-width: 100%; background:white; border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,0.1); padding:16px; display:flex; flex-direction:column; }
+    .header { font-weight:600; margin-bottom:8px; }
+    #chat-log { flex:1; overflow-y:auto; border:1px solid #e5e7eb; border-radius:8px; padding:8px; margin-bottom:8px; font-size:14px; }
+    .bubble { margin:4px 0; padding:6px 8px; border-radius:10px; max-width:80%; }
+    .user { background:#e0f2fe; align-self:flex-end; }
+    .bot { background:#f3f4f6; align-self:flex-start; }
+    .input-row { display:flex; gap:8px; }
+    input { flex:1; padding:6px 8px; border-radius:999px; border:1px solid #d1d5db; font-size:14px; }
+    button { padding:6px 12px; border-radius:999px; border:none; background:#2563eb; color:white; font-size:14px; cursor:pointer; }
+    button:disabled { opacity:0.6; cursor:default; }
+  </style>
+</head>
+<body>
+  <div class="chat-container">
+    <div class="header">TVS Mitra – EMI Assistant</div>
+    <div id="chat-log"></div>
+    <div class="input-row">
+      <input id="msg" placeholder="Type hi, pay, etc..." autocomplete="off" />
+      <button id="send">Send</button>
+    </div>
+  </div>
+
+<script>
+const log = document.getElementById('chat-log');
+const input = document.getElementById('msg');
+const btn = document.getElementById('send');
+
+// hardcode your test number as "from"
+const FROM_NUMBER = "+919064476365";
+
+function addBubble(text, who) {
+  const div = document.createElement('div');
+  div.className = 'bubble ' + (who === 'user' ? 'user' : 'bot');
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+async function sendMessage() {
+  const text = input.value.trim();
+  if (!text) return;
+  addBubble(text, 'user');
+  input.value = '';
+  btn.disabled = true;
+
+  try {
+    const resp = await fetch('/chat-api', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ message: text, from: FROM_NUMBER })
+    });
+    const data = await resp.json();
+    addBubble(data.reply || '(no reply)', 'bot');
+  } catch (e) {
+    addBubble('Error talking to server.', 'bot');
+  } finally {
+    btn.disabled = false;
+    input.focus();
+  }
+}
+
+btn.onclick = sendMessage;
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendMessage();
+});
+
+// greeting
+addBubble("Hi, I'm TVS Mitra. Type 'hi' to start or 'pay' to get your EMI payment link.", 'bot');
+</script>
+</body>
+</html>
+"""
+
+@app.route("/chat", methods=["GET"])
+def chat_page():
+    return Response(CHAT_HTML, mimetype="text/html")
+
+@app.route("/chat-api", methods=["POST"])
+def chat_api():
+    data = request.get_json(force=True) or {}
+    body = data.get("message", "")
+    from_number = data.get("from", "+919064476365")
+    reply = handle_text_message(body, from_number)
+    return jsonify({"reply": reply})
+
+
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     logging.info(f"🚀 Starting TVS Mitra v2 on port {port}")
