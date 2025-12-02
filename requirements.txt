@@ -5,3 +5,4 @@ SQLAlchemy
 psycopg2-binary
 razorpay
 gunicorn
+openai>=1.0.0
