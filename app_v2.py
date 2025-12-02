@@ -362,6 +362,31 @@ def handle_key():
             mimetype="text/xml",
         )
 
+def handle_text_message(body: str, from_number: str) -> str:
+    """Common handler for SMS + Web chat text messages."""
+    text = (body or "").strip().lower()
+    customer = get_customer(from_number)
+
+    if text in ["hi", "hello"]:
+        return "Hello! This is TVS Mitra. Reply with 'PAY' to get your EMI payment link."
+
+    if text == "pay" and customer:
+        link = create_razorpay_payment_link(
+            customer["name"], customer["phone"], customer["emi_amount"]
+        )
+        # log it same as SMS
+        log_call_entry(
+            customer["phone"],
+            "sms_pay_request",
+            "link_sent" if link else "link_failed",
+            payment_link=link,
+            customer_id=customer["id"],
+        )
+        return f"Hello {customer['name']}! Pay your EMI here: {link}"
+
+    # later you can plug LLM here for FAQs / doubts
+    return "Sorry, I didn’t understand. Reply with 'PAY' to get your EMI link."
+
 
 # ------- /sms -------
 @app.route("/sms", methods=["POST"])
