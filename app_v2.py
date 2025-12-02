@@ -159,6 +159,146 @@ def send_payment_link(customer):
         return None
 
 
+def handle_text_message(body: str, from_number: str) -> str:
+    """
+    Common handler for SMS + Web chat messages.
+    Smart rule-based NLP: PAY / STATUS / WHY / ALREADY PAID / AGENT / HELP / DOUBT.
+    """
+    text = (body or "").strip().lower()
+    customer = get_customer(from_number)
+
+    # -------- 0) Generic HELP / MENU --------
+    if text in ["hi", "hello", "hey"]:
+        return (
+            "Hello! This is TVS Mitra.\n"
+            "You can type:\n"
+            "- 'PAY' to get your EMI payment link\n"
+            "- 'STATUS' to check your EMI status\n"
+            "- 'WHY SHOULD I PAY' to understand your EMI\n"
+            "- 'I ALREADY PAID' if you have already paid\n"
+            "- 'AGENT' to request a call from an agent\n"
+        )
+
+    if "help" in text or "options" in text or "menu" in text:
+        return (
+            "Here are some things I can help with:\n"
+            "- 'PAY' → get EMI payment link\n"
+            "- 'STATUS' → see EMI amount, due date, status\n"
+            "- 'WHY SHOULD I PAY' → reason for this EMI\n"
+            "- 'I ALREADY PAID' → tell us you paid\n"
+            "- 'AGENT' → ask for a human to call you\n"
+        )
+
+    # If we don't find the customer, still try to answer basic stuff
+    if not customer:
+        if "why" in text and "pay" in text:
+            return (
+                "This channel is for TVS Credit customers with active EMIs. "
+                "We couldn't find your record linked to this number. "
+                "If you think this is wrong, please contact customer support."
+            )
+        return (
+            "I couldn't find your record linked to this number. "
+            "Please contact TVS Credit support or try again from your registered mobile number."
+        )
+
+    # Extract customer context
+    status = (customer.get("payment_status") or "").lower()
+    emi_amount = customer.get("emi_amount")
+    due_date = customer.get("due_date")
+
+    # -------- 1) PAY / PAYMENT LINK --------
+    if text in ["pay", "pay now", "payment", "link"]:
+        link = create_razorpay_payment_link(
+            customer["name"],
+            customer["phone"],
+            customer["emi_amount"]
+        )
+
+        # ✅ Fallback so you NEVER show 'None'
+        if not link:
+            link = "https://example.com/demo-emi-payment"
+
+        log_call_entry(
+            customer["phone"],
+            "text_pay_request",
+            "link_sent" if link else "link_failed",
+            payment_link=link,
+            customer_id=customer["id"],
+        )
+
+        return f"Hello {customer['name']}! Pay your EMI here: {link}"
+
+    # -------- 2) STATUS --------
+    if "status" in text or ("emi" in text and "status" in text):
+        msg = f"EMI status for {customer['name']}:\n"
+        if emi_amount is not None:
+            msg += f"- EMI Amount: ₹{emi_amount}\n"
+        if due_date:
+            msg += f"- Due Date: {due_date}\n"
+        msg += f"- Current Status: {customer['payment_status']}"
+        return msg
+
+    # -------- 3) WHY SHOULD I PAY --------
+    if "why" in text and "pay" in text:
+        if status == "paid":
+            return (
+                "Our records show your EMI is already PAID. "
+                "Thank you! No further payment is required."
+            )
+
+        reason = (
+            "This EMI is due as per your loan agreement with TVS Credit. "
+            "Paying on time helps you avoid late fees and protects your credit score.\n"
+        )
+        if emi_amount is not None or due_date:
+            reason += "\nDetails:"
+            if emi_amount is not None:
+                reason += f"\n- EMI Amount: ₹{emi_amount}"
+            if due_date:
+                reason += f"\n- Due Date: {due_date}"
+        reason += "\n\nYou can type 'PAY' to get your secure payment link."
+        return reason
+
+    # -------- 4) I ALREADY PAID --------
+    if "already paid" in text or ("paid" in text and "already" in text) or text == "i paid":
+        if status == "paid":
+            return (
+                "Yes, our records already show this EMI as PAID. "
+                "Thank you! No further action is needed."
+            )
+        return (
+            "Thank you for letting us know. Right now our records still show this EMI as Pending. "
+            "If you have already paid, it may take some time to update from the payment gateway. "
+            "You can share your payment reference with an agent, or it will auto-update "
+            "once we receive confirmation from our partner."
+        )
+
+    # -------- 5) AGENT / HUMAN --------
+    if "agent" in text or "human" in text or "call me" in text or "customer care" in text:
+        # You could also insert a call_logs entry here like 'text_agent_request'
+        return (
+            "Okay, we will arrange for an agent to contact you on your registered number. "
+            "For urgent help, please call our customer support helpline."
+        )
+
+    # -------- 6) DOUBT / QUESTION --------
+    if "doubt" in text or "question" in text or "confused" in text:
+        return (
+            "I can help with basic EMI questions like status and payment. "
+            "Type 'STATUS' to see your EMI details, or 'WHY SHOULD I PAY' to understand this EMI. "
+            "For detailed queries, type 'AGENT' and a human will assist you."
+        )
+
+    # -------- 7) FALLBACK --------
+    return (
+        "Sorry, I didn’t fully understand that.\n"
+        "- Type 'PAY' to get your EMI link\n"
+        "- Type 'STATUS' to check your EMI details\n"
+        "- Type 'HELP' to see all options\n"
+    )
+
+
 # ------------------ FLASK APP ------------------
 app = Flask(__name__)
 
@@ -205,7 +345,7 @@ def voice():
                         .where(
                             call_logs.c.phone == customer["phone"],
                             call_logs.c.action.in_(
-                                ["dtmf_pay_link", "sms_pay_request"]
+                                ["dtmf_pay_link", "sms_pay_request", "text_pay_request"]
                             ),
                         )
                         .order_by(call_logs.c.created_at.desc())
@@ -362,31 +502,6 @@ def handle_key():
             mimetype="text/xml",
         )
 
-def handle_text_message(body: str, from_number: str) -> str:
-    """Common handler for SMS + Web chat text messages."""
-    text = (body or "").strip().lower()
-    customer = get_customer(from_number)
-
-    if text in ["hi", "hello"]:
-        return "Hello! This is TVS Mitra. Reply with 'PAY' to get your EMI payment link."
-
-    if text == "pay" and customer:
-        link = create_razorpay_payment_link(
-            customer["name"], customer["phone"], customer["emi_amount"]
-        )
-        # log it same as SMS
-        log_call_entry(
-            customer["phone"],
-            "sms_pay_request",
-            "link_sent" if link else "link_failed",
-            payment_link=link,
-            customer_id=customer["id"],
-        )
-        return f"Hello {customer['name']}! Pay your EMI here: {link}"
-
-    # later you can plug LLM here for FAQs / doubts
-    return "Sorry, I didn’t understand. Reply with 'PAY' to get your EMI link."
-
 
 # ------- /sms -------
 @app.route("/sms", methods=["POST"])
@@ -409,6 +524,7 @@ def sms_reply():
                 "Something went wrong. Please try again later."
             )
         )
+
 
 # ------- Healthcheck -------
 @app.route("/", methods=["GET"])
@@ -465,7 +581,7 @@ def razorpay_webhook():
         return jsonify({"status": "error"}), 500
 
 
-
+# ------------------ CHAT UI (Web chatbot) ------------------
 CHAT_HTML = """
 <!DOCTYPE html>
 <html>
@@ -491,7 +607,7 @@ CHAT_HTML = """
     <div class="header">TVS Mitra – EMI Assistant</div>
     <div id="chat-log"></div>
     <div class="input-row">
-      <input id="msg" placeholder="Type hi, pay, etc..." autocomplete="off" />
+      <input id="msg" placeholder="Type hi, pay, status, why should I pay, etc..." autocomplete="off" />
       <button id="send">Send</button>
     </div>
   </div>
@@ -558,8 +674,6 @@ def chat_api():
     from_number = data.get("from", "+919064476365")
     reply = handle_text_message(body, from_number)
     return jsonify({"reply": reply})
-
-
 
 
 if __name__ == "__main__":
