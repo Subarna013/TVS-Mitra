@@ -3,16 +3,23 @@ from twilio.rest import Client
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Table, MetaData, select, update, or_
 from datetime import date, timedelta
+import razorpay  # 🔹 Razorpay SDK
 
 # ------------------ LOAD ENV ------------------
 load_dotenv()
 
 account_sid = os.getenv("TWILIO_ACCOUNT_SID")
 auth_token = os.getenv("TWILIO_AUTH_TOKEN")
-twilio_number = os.getenv("TWILIO_PHONE_NUMBER")
-bot_url = os.getenv("BOT_URL")        # e.g., https://tvs-mitra-1.onrender.com
+twilio_number = os.getenv("TWILIO_PHONE_NUMBER")        # for voice calls (normal phone)
+bot_url = os.getenv("BOT_URL")                          # e.g., https://tvs-mitra-1.onrender.com
 DATABASE_URL = os.getenv("DATABASE_URL")
-TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"  # Twilio WhatsApp Sandbox number
+
+# 🔹 Twilio WhatsApp Sandbox number (fixed)
+TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
+
+# 🔹 Razorpay keys
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
+RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
 
 if not bot_url:
     raise ValueError("❌ Please set BOT_URL in your .env file pointing to the /voice endpoint.")
@@ -20,8 +27,12 @@ if not bot_url:
 if not DATABASE_URL:
     raise RuntimeError("❌ DATABASE_URL not set in environment variables")
 
-# ------------------ INIT CLIENT ------------------
+if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
+    raise RuntimeError("❌ Razorpay keys (RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET) not set in .env")
+
+# ------------------ INIT CLIENTS ------------------
 client = Client(account_sid, auth_token)
+rzp_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 
 # ------------------ DATABASE SETUP ------------------
 engine = create_engine(DATABASE_URL)
@@ -41,6 +52,41 @@ def normalize_phone(phone: str) -> str:
     return phone
 
 
+# ------------------ HELPER: CREATE RAZORPAY LINK ------------------
+def create_razorpay_payment_link_for_customer(cust):
+    """
+    Create a Razorpay payment link for this customer and return the URL.
+    Does NOT send any SMS/WhatsApp — just returns the link.
+    """
+    try:
+        # cust.emi_amount is likely Decimal -> cast to float
+        amount_rupees = float(cust.emi_amount)
+        amount_paise = int(round(amount_rupees * 100))
+
+        payload = {
+            "amount": amount_paise,
+            "currency": "INR",
+            "accept_partial": False,
+            "description": f"EMI payment for {cust.name}",
+            "customer": {
+                "name": cust.name,
+                "contact": normalize_phone(cust.phone),
+                "email": "no-reply@example.com",
+            },
+            "notify": {"sms": True, "email": False},
+            "reminder_enable": True,
+        }
+
+        resp = rzp_client.payment_link.create(payload)
+        link = resp.get("short_url") or resp.get("shortLink") or resp.get("link")
+        print(f"✅ Razorpay link for {cust.name}: {link}")
+        return link
+
+    except Exception as e:
+        print(f"❌ Failed to create Razorpay link for {cust.name}: {e}")
+        return None
+
+
 # ------------------ HELPER: PLACE A CALL ------------------
 def _place_call_to_customer(cust, bucket: str):
     """Place a Twilio call to a single customer row, with pre_due/due bucket."""
@@ -55,14 +101,14 @@ def _place_call_to_customer(cust, bucket: str):
         print(f"⏭️ Skipping {cust.name}, already called today.")
         return
 
-    # Normalize phone number
+    # Normalize phone number (for call + WhatsApp)
     phone = normalize_phone(cust.phone)
     if not phone:
         print(f"⏭️ Skipping {cust.name}, invalid phone.")
         return
 
     try:
-        # 1️⃣ Place the outbound IVR call
+        # 1️⃣ Place the outbound IVR call (normal voice call)
         call = client.calls.create(
             to=phone,
             from_=twilio_number,
@@ -82,26 +128,34 @@ def _place_call_to_customer(cust, bucket: str):
             )
             conn.execute(stmt)
 
-        # 3️⃣ NEW: send chatbot link via SMS (NOT reply-based)
-        # 3️⃣ NEW: send chatbot link via WhatsApp (Sandbox)
+        # 3️⃣ Create payment link
+        payment_link = create_razorpay_payment_link_for_customer(cust)
+        if not payment_link:
+            payment_link = "https://example.com/demo-emi-payment"
+
+        # 4️⃣ Send WhatsApp message with BOTH payment link + chatbot link
         try:
             chat_url = f"{bot_url}/chat?phone={phone}"
-            sms_body = (
-                f"Hello {cust.name}, this is TVS Mitra from TVS Credit.\n"
-                "We just tried calling you about your EMI.\n"
-                "You can chat with our assistant and manage your EMI here:\n"
-                f"{chat_url}\n\n"
-                "Type 'pay', 'status', 'why should I pay', or any question in the chat."
-            )
-            client.messages.create(
-                to=f"whatsapp:{phone}",  # 🟢 send to WhatsApp
-                from_=TWILIO_WHATSAPP_NUMBER,  # 🟢 from sandbox WA number
-                body=sms_body,
-            )
-            print(f"✉️ Chatbot link WhatsApp sent to {cust.name} ({phone})")
-        except Exception as e:
-            print(f"⚠️ Failed to send chatbot WhatsApp to {cust.name}: {e}")
 
+            wa_body = (
+                f"Hello {cust.name}, this is TVS Mitra from TVS Credit.\n"
+                "We just tried calling you about your EMI.\n\n"
+                "💳 Pay your EMI directly here:\n"
+                f"{payment_link}\n\n"
+                "💬 You can also chat with our assistant and manage your EMI here:\n"
+                f"{chat_url}\n\n"
+                "You can type 'pay', 'status', 'why should I pay', or any question in the chat."
+            )
+
+            client.messages.create(
+                to=f"whatsapp:{phone}",           # send to your WhatsApp number
+                from_=TWILIO_WHATSAPP_NUMBER,     # Twilio WhatsApp sandbox number
+                body=wa_body,
+            )
+            print(f"✉️ WhatsApp (chatbot + payment link) sent to {cust.name} ({phone})")
+
+        except Exception as e:
+            print(f"⚠️ Failed to send WhatsApp to {cust.name}: {e}")
 
     except Exception as e:
         print(f"[{bucket.upper()}] ❌ Failed to call {cust.name} ({phone}): {str(e)}")
