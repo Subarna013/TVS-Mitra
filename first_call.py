@@ -61,7 +61,7 @@ def _place_call_to_customer(cust, bucket: str):
         return
 
     try:
-        # Pass the bucket as query param so /voice can customize script
+        # 1️⃣ Place the outbound IVR call
         call = client.calls.create(
             to=phone,
             from_=twilio_number,
@@ -72,7 +72,7 @@ def _place_call_to_customer(cust, bucket: str):
             f"SID: {call.sid}"
         )
 
-        # Update last_call_date in DB
+        # 2️⃣ Update last_call_date in DB
         with engine.begin() as conn:
             stmt = (
                 update(customers)
@@ -80,6 +80,25 @@ def _place_call_to_customer(cust, bucket: str):
                 .values(last_call_date=date.today())
             )
             conn.execute(stmt)
+
+        # 3️⃣ NEW: send follow-up SMS to open chatbot
+        try:
+            sms_body = (
+                f"Hello {cust.name}, this is TVS Mitra from TVS Credit.\n"
+                "We just tried calling you about your EMI.\n"
+                "You can reply here with:\n"
+                "- 'PAY' to get your EMI payment link\n"
+                "- 'STATUS' to see EMI details\n"
+                "- Or any question about your EMI"
+            )
+            client.messages.create(
+                to=phone,
+                from_=twilio_number,
+                body=sms_body,
+            )
+            print(f"✉️ Follow-up chatbot SMS sent to {cust.name} ({phone})")
+        except Exception as e:
+            print(f"⚠️ Failed to send follow-up SMS to {cust.name}: {e}")
 
     except Exception as e:
         print(f"[{bucket.upper()}] ❌ Failed to call {cust.name} ({phone}): {str(e)}")
