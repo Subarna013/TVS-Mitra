@@ -12,6 +12,7 @@ auth_token = os.getenv("TWILIO_AUTH_TOKEN")
 twilio_number = os.getenv("TWILIO_PHONE_NUMBER")
 bot_url = os.getenv("BOT_URL")        # e.g., https://tvs-mitra-1.onrender.com
 DATABASE_URL = os.getenv("DATABASE_URL")
+TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"  # Twilio WhatsApp Sandbox number
 
 if not bot_url:
     raise ValueError("❌ Please set BOT_URL in your .env file pointing to the /voice endpoint.")
@@ -82,6 +83,7 @@ def _place_call_to_customer(cust, bucket: str):
             conn.execute(stmt)
 
         # 3️⃣ NEW: send chatbot link via SMS (NOT reply-based)
+        # 3️⃣ NEW: send chatbot link via WhatsApp (Sandbox)
         try:
             chat_url = f"{bot_url}/chat?phone={phone}"
             sms_body = (
@@ -92,13 +94,14 @@ def _place_call_to_customer(cust, bucket: str):
                 "Type 'pay', 'status', 'why should I pay', or any question in the chat."
             )
             client.messages.create(
-                to=phone,
-                from_=twilio_number,
+                to=f"whatsapp:{phone}",  # 🟢 send to WhatsApp
+                from_=TWILIO_WHATSAPP_NUMBER,  # 🟢 from sandbox WA number
                 body=sms_body,
             )
-            print(f"✉️ Chatbot link SMS sent to {cust.name} ({phone})")
+            print(f"✉️ Chatbot link WhatsApp sent to {cust.name} ({phone})")
         except Exception as e:
-            print(f"⚠️ Failed to send chatbot SMS to {cust.name}: {e}")
+            print(f"⚠️ Failed to send chatbot WhatsApp to {cust.name}: {e}")
+
 
     except Exception as e:
         print(f"[{bucket.upper()}] ❌ Failed to call {cust.name} ({phone}): {str(e)}")
