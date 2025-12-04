@@ -30,7 +30,7 @@ twilio_client = Client(twilio_sid, twilio_token)
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
 rzp_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
-
+BOT_URL = os.getenv("BOT_URL")
 # ✅ NEW: Gemini client setup
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
@@ -166,11 +166,17 @@ def send_payment_link(customer):
             link = "https://example.com/demo-emi-payment"
             logging.warning("⚠️ Razorpay link failed, using fallback demo link.")
 
-        # 3) Send SMS
+        # 3) Build SMS body with optional chat link
+        chat_url = f"{BOT_URL}/chat?phone={phone}" if BOT_URL else ""
+        body = f"Hello {customer['name']}, pay your EMI here: {link}"
+        if chat_url:
+            body += f"\nNeed help? Chat with TVS Mitra: {chat_url}"
+
+        # 4) Send SMS
         msg = twilio_client.messages.create(
             to=phone,
             from_=twilio_number,
-            body=f"Hello {customer['name']}, pay your EMI here: {link}",
+            body=body,
         )
         logging.info(
             f"✅ SMS sent from {twilio_number} to {phone}, SID={msg.sid}, link={link}"
@@ -180,6 +186,8 @@ def send_payment_link(customer):
     except Exception:
         logging.exception("❌ Failed to send payment link SMS")
         return None
+
+
 
 
 # ✅ UPDATED: LLM fallback now uses Gemini
@@ -741,7 +749,10 @@ const input = document.getElementById('msg');
 const btn = document.getElementById('send');
 
 // hardcode your test number as "from"
-const FROM_NUMBER = "+919064476365";
+// Get phone from URL: /chat?phone=+919064476365
+const params = new URLSearchParams(window.location.search);
+const FROM_NUMBER = params.get("phone") || "+919064476365";
+
 
 function addBubble(text, who) {
   const div = document.createElement('div');
