@@ -81,24 +81,24 @@ def _place_call_to_customer(cust, bucket: str):
             )
             conn.execute(stmt)
 
-        # 3️⃣ NEW: send follow-up SMS to open chatbot
+        # 3️⃣ NEW: send chatbot link via SMS (NOT reply-based)
         try:
+            chat_url = f"{bot_url}/chat?phone={phone}"
             sms_body = (
                 f"Hello {cust.name}, this is TVS Mitra from TVS Credit.\n"
                 "We just tried calling you about your EMI.\n"
-                "You can reply here with:\n"
-                "- 'PAY' to get your EMI payment link\n"
-                "- 'STATUS' to see EMI details\n"
-                "- Or any question about your EMI"
+                "You can chat with our assistant and manage your EMI here:\n"
+                f"{chat_url}\n\n"
+                "Type 'pay', 'status', 'why should I pay', or any question in the chat."
             )
             client.messages.create(
                 to=phone,
                 from_=twilio_number,
                 body=sms_body,
             )
-            print(f"✉️ Follow-up chatbot SMS sent to {cust.name} ({phone})")
+            print(f"✉️ Chatbot link SMS sent to {cust.name} ({phone})")
         except Exception as e:
-            print(f"⚠️ Failed to send follow-up SMS to {cust.name}: {e}")
+            print(f"⚠️ Failed to send chatbot SMS to {cust.name}: {e}")
 
     except Exception as e:
         print(f"[{bucket.upper()}] ❌ Failed to call {cust.name} ({phone}): {str(e)}")
