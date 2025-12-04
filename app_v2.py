@@ -12,10 +12,6 @@ import hmac
 import hashlib
 import difflib
 
-# ✅ NEW: Gemini / Google Generative AI
-import google.generativeai as genai
-llm_model = None  # will hold the Gemini model instance
-
 # ------------------ SETUP ------------------
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -30,21 +26,6 @@ twilio_client = Client(twilio_sid, twilio_token)
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
 rzp_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
-BOT_URL = os.getenv("BOT_URL")
-# ✅ NEW: Gemini client setup
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        # you can use "gemini-1.5-flash" or another model name
-        llm_model = genai.GenerativeModel("gemini-1.5-flash")
-        logging.info("✅ Gemini model initialized successfully")
-    except Exception:
-        logging.exception("❌ Failed to initialize Gemini model")
-        llm_model = None
-else:
-    logging.warning("⚠️ GEMINI_API_KEY not set. LLM fallback will use static replies.")
-    llm_model = None
 
 # Database setup
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -166,17 +147,11 @@ def send_payment_link(customer):
             link = "https://example.com/demo-emi-payment"
             logging.warning("⚠️ Razorpay link failed, using fallback demo link.")
 
-        # 3) Build SMS body with optional chat link
-        chat_url = f"{BOT_URL}/chat?phone={phone}" if BOT_URL else ""
-        body = f"Hello {customer['name']}, pay your EMI here: {link}"
-        if chat_url:
-            body += f"\nNeed help? Chat with TVS Mitra: {chat_url}"
-
-        # 4) Send SMS
+        # 3) Send SMS
         msg = twilio_client.messages.create(
             to=phone,
             from_=twilio_number,
-            body=body,
+            body=f"Hello {customer['name']}, pay your EMI here: {link}",
         )
         logging.info(
             f"✅ SMS sent from {twilio_number} to {phone}, SID={msg.sid}, link={link}"
@@ -188,100 +163,20 @@ def send_payment_link(customer):
         return None
 
 
-
-
-# ✅ UPDATED: LLM fallback now uses Gemini
 def llm_fallback_reply(user_text: str, customer: dict | None) -> str:
     """
     Fallback reply when no specific rule matched.
-    Uses Gemini (if configured) to behave like a general TVS Mitra assistant.
+    No external LLM used (to avoid quota / extra deps).
     """
-
-    # If no LLM model, keep old safe behaviour
-    if llm_model is None:
-        base = (
-            "I'm still learning to handle more questions.\n"
-            "Right now I can help you with your EMI basics:\n"
-            "- Type 'PAY' to get your EMI link\n"
-            "- Type 'STATUS' to see EMI amount and status\n"
-            "- Type 'WHY SHOULD I PAY' to understand your EMI\n"
-            "- Type 'I ALREADY PAID' if you've already paid\n"
-            "- Type 'AGENT' to talk to a human\n"
-        )
-        return base
-
-    # Build customer context string for the model
-    customer_context = "No customer record found for this number."
-    if customer:
-        customer_context = (
-            f"Customer name: {customer.get('name')}\n"
-            f"Phone: {customer.get('phone')}\n"
-            f"EMI amount: {customer.get('emi_amount')}\n"
-            f"Due date: {customer.get('due_date')}\n"
-            f"Payment status: {customer.get('payment_status')}\n"
-            f"Last call status: {customer.get('last_call_status')}\n"
-        )
-
-    system_prompt = """
-You are TVS Mitra, an AI assistant for a finance/EMI collections product for TVS Credit.
-
-Your priorities:
-1. Be polite, clear and concise (2–5 short sentences max, unless the user explicitly asks for a long explanation).
-2. If the user asks about their EMI, loan, due dates, penalties, or payment:
-   - Use the customer context given to you (EMI amount, due date, payment_status).
-   - Explain things in simple language.
-   - Gently encourage on-time payment and explain benefits (avoid late fees, protect credit history).
-3. If the user chats about GENERAL topics (news, jokes, small talk, etc.):
-   - You may answer normally like a smart assistant.
-   - Still keep replies short and friendly.
-4. If a question is about internal TVS policies you don't know, say you are not sure
-   and suggest contacting customer support.
-5. Never promise to actually change account details, waive charges, or approve loans yourself.
-   You can only explain and guide, not perform back-office actions.
-
-Always sound like a professional but friendly EMI assistant.
-"""
-
-    user_message = (
-        "Here is the current customer context (may be empty):\n"
-        f"{customer_context}\n\n"
-        "Now the user said:\n"
-        f"\"{user_text}\""
+    return (
+        "I'm still learning to handle more questions.\n"
+        "Right now I can help you with your EMI basics:\n"
+        "- Type 'PAY' to get your EMI link\n"
+        "- Type 'STATUS' to see EMI amount and status\n"
+        "- Type 'WHY SHOULD I PAY' to understand your EMI\n"
+        "- Type 'I ALREADY PAID' if you've already paid\n"
+        "- Type 'AGENT' to talk to a human\n"
     )
-
-    try:
-        # Gemini: send system + user text
-        response = llm_model.generate_content(
-            [
-                {"role": "user", "parts": [system_prompt]},
-                {"role": "user", "parts": [user_message]},
-            ]
-        )
-        reply = (response.text or "").strip()
-        if not reply:
-            return (
-                "I'm having trouble understanding that right now.\n"
-                "You can try these options:\n"
-                "- 'PAY' → get EMI payment link\n"
-                "- 'STATUS' → see EMI amount and status\n"
-                "- 'WHY SHOULD I PAY' → reason for this EMI\n"
-                "- 'I ALREADY PAID' → tell us you paid\n"
-                "- 'AGENT' → talk to a human\n"
-            )
-        return reply
-
-    except Exception:
-        logging.exception("LLM (Gemini) fallback failed")
-        # Graceful fallback if LLM call fails
-        return (
-            "I'm having trouble answering that right now.\n"
-            "You can try these options:\n"
-            "- 'PAY' → get EMI payment link\n"
-            "- 'STATUS' → see EMI amount and status\n"
-            "- 'WHY SHOULD I PAY' → reason for this EMI\n"
-            "- 'I ALREADY PAID' → tell us you paid\n"
-            "- 'AGENT' → talk to a human\n"
-        )
 
 
 def handle_text_message(body: str, from_number: str) -> str:
@@ -345,7 +240,7 @@ def handle_text_message(body: str, from_number: str) -> str:
         link = create_razorpay_payment_link(
             customer["name"],
             customer["phone"],
-            customer["emi_amount"]
+            customer["emi_amount"],
         )
 
         # ✅ Fallback so you NEVER show 'None'
@@ -426,7 +321,7 @@ def handle_text_message(body: str, from_number: str) -> str:
             "For detailed queries, type 'AGENT' and a human will assist you."
         )
 
-    # -------- 7) FALLBACK → use LLM (Gemini) --------
+    # -------- 7) FALLBACK → simple reply (no LLM) --------
     return llm_fallback_reply(body, customer)
 
 
@@ -748,11 +643,9 @@ const log = document.getElementById('chat-log');
 const input = document.getElementById('msg');
 const btn = document.getElementById('send');
 
-// hardcode your test number as "from"
 // Get phone from URL: /chat?phone=+919064476365
 const params = new URLSearchParams(window.location.search);
 const FROM_NUMBER = params.get("phone") || "+919064476365";
-
 
 function addBubble(text, who) {
   const div = document.createElement('div');
@@ -800,6 +693,7 @@ addBubble("Hi, I'm TVS Mitra. Type 'hi' to start or 'pay' to get your EMI paymen
 @app.route("/chat", methods=["GET"])
 def chat_page():
     return Response(CHAT_HTML, mimetype="text/html")
+
 
 @app.route("/chat-api", methods=["POST"])
 def chat_api():
