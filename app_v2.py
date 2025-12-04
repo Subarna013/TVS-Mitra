@@ -21,6 +21,8 @@ twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
 twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
 twilio_number = os.getenv("TWILIO_PHONE_NUMBER")
 twilio_client = Client(twilio_sid, twilio_token)
+# WhatsApp (Sandbox) sender
+TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"  # Twilio WhatsApp Sandbox number
 
 # Razorpay setup
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
@@ -149,10 +151,11 @@ def send_payment_link(customer):
 
         # 3) Send SMS
         msg = twilio_client.messages.create(
-            to=phone,
-            from_=twilio_number,
+            to=f"whatsapp:{phone}",
+            from_=TWILIO_WHATSAPP_NUMBER,
             body=f"Hello {customer['name']}, pay your EMI here: {link}",
         )
+
         logging.info(
             f"✅ SMS sent from {twilio_number} to {phone}, SID={msg.sid}, link={link}"
         )
