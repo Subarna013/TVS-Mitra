@@ -15,6 +15,10 @@ from intents_inference import predict_intent
 from sentiments_inference import predict_sentiment
 import google.generativeai as genai
 from payment_inference import predict_payment_probability
+from sentence_transformers import SentenceTransformer
+import numpy as np
+import psycopg2
+
 
 # ------------------ SETUP ------------------
 load_dotenv()
@@ -34,6 +38,18 @@ if GEMINI_API_KEY:
         gemini_model = None
 else:
     logging.warning("⚠️ GEMINI_API_KEY not set. Gemini features disabled.")
+
+
+# ---- Policy embedding model (for RAG over TVS policies/FAQ) ----
+EMB_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"  # safer name
+
+try:
+    policy_model = SentenceTransformer(EMB_MODEL_NAME)
+    logging.info(f"✅ Policy embedding model loaded: {EMB_MODEL_NAME}")
+except Exception:
+    logging.exception("❌ Failed to load policy embedding model")
+    policy_model = None
+
 
 # Twilio setup
 twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
@@ -91,6 +107,85 @@ def normalize_phone(phone: str):
         phone = "+91" + phone.lstrip("+")
 
     return phone
+
+import difflib  # you already have this at the top
+
+def fuzzy_contains_any(text: str, keywords: list[str], cutoff: float = 0.8) -> bool:
+    """
+    Return True if *any* keyword is present in text either:
+    - as a substring, or
+    - as a 'close' word (e.g. 'fruud' ~ 'fraud').
+    """
+    text_low = (text or "").lower()
+    # direct substring match
+    for kw in keywords:
+        if kw in text_low:
+            return True
+
+    # token-level fuzzy match
+    words = text_low.split()
+    for w in words:
+        for kw in keywords:
+            if difflib.SequenceMatcher(None, w, kw).ratio() >= cutoff:
+                return True
+
+    return False
+
+
+def looks_like_already_paid(text: str) -> bool:
+    """Detect variations like 'but i paid', 'i already paid', 'payment done' etc."""
+    t = (text or "").lower()
+
+    patterns = [
+        "already paid",
+        "i already paid",
+        "payment done",
+        "paid already",
+        "but i paid",
+        "but i have paid",
+    ]
+    if any(p in t for p in patterns):
+        return True
+
+    # 'i paid', 'paid' (simple exact short variants)
+    if t.strip() in ["i paid", "paid"]:
+        return True
+
+    # fuzzy: "i alredi pad" etc
+    if "already" in t and fuzzy_contains_any(t, ["paid", "payment"], cutoff=0.8):
+        return True
+
+    return False
+
+
+def looks_like_why_pay(text: str) -> bool:
+    """Detect 'why should I pay', 'why pay', etc."""
+    t = (text or "").lower()
+
+    if "why" in t and fuzzy_contains_any(t, ["pay"], cutoff=0.8):
+        return True
+    if "should i" in t and fuzzy_contains_any(t, ["pay"], cutoff=0.8):
+        return True
+
+    return False
+
+
+def looks_like_hardship(text: str) -> bool:
+    """
+    Detect hardship cases: 'can't pay', 'cannot pay', 'lost my job', etc.
+    Uses fuzzy_contains_any so small typos are okay.
+    """
+    t = (text or "").lower()
+
+    cant_words = ["cant", "can't", "cannot", "can not", "unable"]
+    if fuzzy_contains_any(t, cant_words, cutoff=0.7) and fuzzy_contains_any(t, ["pay"], cutoff=0.8):
+        return True
+
+    # lost job / income issues
+    if fuzzy_contains_any(t, ["lost"], cutoff=0.8) and fuzzy_contains_any(t, ["job", "income", "salary"], cutoff=0.7):
+        return True
+
+    return False
 
 
 def log_call_entry(phone, action, outcome, payment_link=None, customer_id=None):
@@ -221,20 +316,9 @@ def llm_fallback_reply(user_text: str, customer: dict | None) -> str:
     )
 
 
-def gemini_policy_answer(user_text: str, customer: dict | None) -> str:
-    """
-    Use Gemini to answer EMI / loan / policy / finance questions.
-    Acts like a general LLM chatbot but scoped to TVS Credit + EMIs.
-    """
+def gemini_policy_answer(user_text: str, customer: dict | None, extra_context: list[str] | None = None) -> str:
     if gemini_model is None:
-        # fallback if Gemini not available
-        return (
-            "I can help with basic EMI options:\n"
-            "- 'PAY' → payment link\n"
-            "- 'STATUS' → EMI status\n"
-            "- 'WHY SHOULD I PAY' → EMI explanation\n"
-            "- 'AGENT' → talk to a human\n"
-        )
+        return llm_fallback_reply(user_text, customer)
 
     customer_context = ""
     if customer:
@@ -247,31 +331,32 @@ def gemini_policy_answer(user_text: str, customer: dict | None) -> str:
             f"- Last call status: {customer.get('last_call_status')}\n"
         )
 
+    doc_context = ""
+    if extra_context:
+        joined = "\n\n---\n".join(extra_context)
+        doc_context = (
+            "Here are some relevant excerpts from TVS Credit policies and FAQs.\n"
+            "Use ONLY this information + general EMI knowledge. If something is not clear, say so.\n\n"
+            f"{joined}\n\n"
+        )
+
     system_instruction = (
         "You are TVS Mitra, an EMI collections assistant for an Indian NBFC (TVS Credit).\n"
-        "Your job is to explain:\n"
-        "- EMIs, loans, interest, due dates, late fees, bounce charges,\n"
-        "- basic financial literacy in the context of EMIs and repayments,\n"
-        "- what happens if a customer pays late / misses payment,\n"
-        "- how to maintain a good credit profile.\n\n"
-        "STRICT RULES:\n"
-        "1. Only answer questions related to EMIs, loans, TVS Credit communications, or basic Indian retail finance.\n"
-        "   If the user asks about politics, news, celebrities, exams, or anything unrelated, reply that you are\n"
-        "   only able to help with loan and EMI related questions.\n"
-        "2. Do NOT invent exact TVS Credit internal policies, fee tables or contract terms. Instead say that exact\n"
-        "   charges and policies depend on the loan agreement and the customer should check their agreement or\n"
-        "   contact TVS Credit customer support.\n"
-        "3. If the user sounds angry or worried, respond in a calm, empathetic tone, and suggest they can talk to a\n"
-        "   human agent or customer care for detailed help.\n"
-        "4. NEVER say you have changed their EMI, waived charges, or updated any record. You are only explaining.\n"
-        "5. Keep answers short, clear and in simple language. Use bullet points when helpful.\n"
+        "You must answer based ONLY on:\n"
+        "- The policy excerpts provided, and\n"
+        "- General high-level EMI/credit knowledge.\n"
+        "If the answer is not clearly supported by policies, say that exact details depend on the customer's loan agreement "
+        "and they should contact TVS Credit support.\n"
+        "NEVER invent exact fees, dates, or promises.\n"
     )
 
     prompt = (
         system_instruction
         + "\n\n"
         + customer_context
-        + "\nUser question:\n"
+        + "\n"
+        + doc_context
+        + "User question:\n"
         + user_text
     )
 
@@ -282,16 +367,8 @@ def gemini_policy_answer(user_text: str, customer: dict | None) -> str:
             raise ValueError("Empty Gemini answer")
         return answer
     except Exception:
-        logging.exception("Gemini policy answer failed")
-        return (
-            "I'm having trouble fetching a detailed explanation right now.\n"
-            "For specific policy or charge-related questions, please check your loan agreement "
-            "or contact TVS Credit customer support.\n"
-            "You can still use:\n"
-            "- 'PAY' → get EMI link\n"
-            "- 'STATUS' → check EMI status\n"
-            "- 'AGENT' → talk to a human\n"
-        )
+        logging.exception("Gemini policy answer failed – using simple fallback")
+        return llm_fallback_reply(user_text, customer)
 
 
 
@@ -360,7 +437,12 @@ def handle_text_message(body: str, from_number: str) -> str:
         "stop disturbing",
     ]
 
-    has_dispute_word = any(k in text for k in dispute_keywords)
+    # fuzzy match single-word typos like "fruud" ~ "fraud"
+    base_roots = ["fraud", "scam", "cheat", "harass"]
+    has_dispute_word = (
+            fuzzy_contains_any(text, dispute_keywords, cutoff=0.8)
+            or fuzzy_contains_any(text, base_roots, cutoff=0.8)
+    )
 
     if has_dispute_word:
         return (
@@ -402,12 +484,41 @@ def handle_text_message(body: str, from_number: str) -> str:
             "- 'AGENT' → ask for a human to call you\n"
         )
 
+    # -------- HARDSHIP / CANNOT PAY --------
+    if looks_like_hardship(text):
+        return (
+            "I'm sorry to hear you're facing financial difficulty.\n\n"
+            "Here are a few options you can consider:\n"
+            "- Talk to a TVS Credit agent about possible options like rescheduling or restructuring.\n"
+            "- Try not to ignore the EMI completely, as it can affect your credit score and future loans.\n"
+            "- If you expect income soon, you can ask if a short extension is possible.\n\n"
+            "For detailed help, it's best to speak to a human agent. "
+            "You can type 'AGENT' and we will arrange a call back."
+        )
+
     # -------- 💬 Small-talk / fun replies --------
     if "love you" in text or "luv u" in text or "i love u" in text:
         return "Haha, I'm just your TVS Mitra EMI assistant, but I'm always here to help you 🤝"
 
     if is_intent("SMALL_TALK") or "joke" in text or "funny" in text or "laugh" in text:
         return "Here’s a finance joke: Why did the EMI go to school? To become a little more payable every month. 😄"
+
+    # Extra small-talk patterns not covered by intent model
+    if "who are u" in text or "who r u" in text or "who are you" in text:
+        return (
+            "I'm TVS Mitra, an EMI assistant from TVS Credit.\n"
+            "I can help you with:\n"
+            "- Your EMI payment link (type 'PAY')\n"
+            "- EMI amount and status (type 'STATUS')\n"
+            "- Questions about why and how to pay\n"
+            "- Connecting you to an agent (type 'AGENT')"
+        )
+
+    if fuzzy_contains_any(text, ["marry", "marriage"], cutoff=0.8):
+        return (
+            "Haha 😄 I'm just a virtual EMI assistant, not a human.\n"
+            "But I promise to be loyal in reminding you about your EMIs!"
+        )
 
     # -------- 2) Customer not found --------
     if not customer:
@@ -473,7 +584,7 @@ def handle_text_message(body: str, from_number: str) -> str:
         return msg
 
     # -------- 5) WHY SHOULD I PAY (intent or text condition) --------
-    if is_intent("WHY_PAY") or ("why" in text and "pay" in text):
+    if is_intent("WHY_PAY") or looks_like_why_pay(text):
         if status == "paid":
             return (
                 "Our records show your EMI is already PAID. "
@@ -499,12 +610,7 @@ def handle_text_message(body: str, from_number: str) -> str:
         return reason
 
     # -------- 6) I ALREADY PAID (intent or keywords) --------
-    if (
-        is_intent("ALREADY_PAID")
-        or "already paid" in text
-        or ("paid" in text and "already" in text)
-        or text == "i paid"
-    ):
+    if is_intent("ALREADY_PAID") or looks_like_already_paid(text):
         if status == "paid":
             return (
                 "Yes, our records already show this EMI as PAID. "
@@ -551,7 +657,10 @@ def handle_text_message(body: str, from_number: str) -> str:
         or "explain" in text
         or "what is" in text
     ):
-        answer = gemini_policy_answer(body, customer)
+        # 🔍 Fetch relevant TVS policy chunks
+        policy_snippets = retrieve_policy_chunks(body)
+
+        answer = gemini_policy_answer(body, customer, extra_context=policy_snippets)
         return (
             answer
             + "\n\nIf this doesn't fully answer your question, you can type 'AGENT' to talk to a human."
@@ -567,6 +676,54 @@ def handle_text_message(body: str, from_number: str) -> str:
         )
 
     return answer
+
+
+def retrieve_policy_chunks(query: str, top_k: int = 5):
+    """
+    Given a user query, return top_k relevant policy chunks (list of strings).
+    Embeddings are stored as comma-separated floats in TEXT column.
+    """
+    try:
+        # Encode query
+        q_emb = policy_model.encode([query])[0]  # shape (384,)
+        q_norm = np.linalg.norm(q_emb) + 1e-8
+
+        # Fetch all chunks from DB
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("SELECT chunk_text, embedding FROM policy_chunks")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        scored = []
+
+        for chunk_text, emb_str in rows:
+            if not emb_str:
+                continue
+            try:
+                # parse "0.1234,0.5678,..." -> numpy array
+                vec = np.fromstring(emb_str, sep=",", dtype=float)
+                if vec.size == 0:
+                    continue
+
+                v_norm = np.linalg.norm(vec) + 1e-8
+                sim = float(np.dot(q_emb, vec) / (q_norm * v_norm))
+                scored.append((sim, chunk_text))
+            except Exception:
+                continue
+
+        # sort by similarity (highest first)
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        # return top_k texts
+        return [t for (s, t) in scored[:top_k]]
+
+    except Exception:
+        logging.exception("Policy retrieval failed")
+        return []
+
+
 
 
 
