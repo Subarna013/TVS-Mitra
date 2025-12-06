@@ -69,22 +69,23 @@ def normalize_phone(phone: str):
 
     phone = phone.strip()
 
-    # Strip Twilio WhatsApp prefix if present
+    # Handle Twilio WhatsApp format: "whatsapp:+9190..."
     if phone.startswith("whatsapp:"):
-        phone = phone[len("whatsapp:"):]
+        phone = phone[len("whatsapp:"):]  # remove the prefix
 
     # Remove spaces and dashes
     phone = phone.replace(" ", "").replace("-", "")
 
-    # Remove leading 0s (like 09876...)
+    # Remove leading 0s (e.g. 09123456789 -> 9123456789)
     if phone.startswith("0"):
         phone = phone.lstrip("0")
 
-    # Add +91 if no country code prefix
+    # Ensure +91 prefix
     if not phone.startswith("+"):
         phone = "+91" + phone.lstrip("+")
 
     return phone
+
 
 
 def log_call_entry(phone, action, outcome, payment_link=None, customer_id=None):
