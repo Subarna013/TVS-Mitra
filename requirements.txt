@@ -5,9 +5,7 @@ SQLAlchemy
 psycopg2-binary
 razorpay
 gunicorn
-openai>=1.0.0
 google-generativeai
 pandas
 scikit-learn
 joblib
-sentence-transformers
