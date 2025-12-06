@@ -205,7 +205,7 @@ def llm_fallback_reply(user_text: str, customer: dict | None) -> str:
 def gemini_policy_answer(user_text: str, customer: dict | None) -> str:
     """
     Use Gemini to answer EMI / loan / policy / finance questions.
-    This is your 'RAG-like' FAQ brain without maintaining faq_data.txt.
+    Acts like a general LLM chatbot but scoped to TVS Credit + EMIs.
     """
     if gemini_model is None:
         # fallback if Gemini not available
@@ -220,19 +220,32 @@ def gemini_policy_answer(user_text: str, customer: dict | None) -> str:
     customer_context = ""
     if customer:
         customer_context = (
-            f"Customer EMI context (may be partial):\n"
+            "Customer EMI context (may be partial):\n"
+            f"- Name: {customer.get('name')}\n"
             f"- EMI amount: {customer.get('emi_amount')}\n"
             f"- Due date: {customer.get('due_date')}\n"
             f"- Payment status: {customer.get('payment_status')}\n"
+            f"- Last call status: {customer.get('last_call_status')}\n"
         )
 
     system_instruction = (
-        "You are TVS Mitra, an assistant for an Indian NBFC's EMI collections team.\n"
-        "Answer questions about EMI, loans, basic finance, late fees, bounce charges, etc., "
-        "in simple language.\n"
-        "If the user asks about exact internal TVS Credit policies or precise fee amounts, "
-        "say that policies may vary and they should check their loan agreement or contact customer support.\n"
-        "Do NOT invent exact fees, dates, or contract terms.\n"
+        "You are TVS Mitra, an EMI collections assistant for an Indian NBFC (TVS Credit).\n"
+        "Your job is to explain:\n"
+        "- EMIs, loans, interest, due dates, late fees, bounce charges,\n"
+        "- basic financial literacy in the context of EMIs and repayments,\n"
+        "- what happens if a customer pays late / misses payment,\n"
+        "- how to maintain a good credit profile.\n\n"
+        "STRICT RULES:\n"
+        "1. Only answer questions related to EMIs, loans, TVS Credit communications, or basic Indian retail finance.\n"
+        "   If the user asks about politics, news, celebrities, exams, or anything unrelated, reply that you are\n"
+        "   only able to help with loan and EMI related questions.\n"
+        "2. Do NOT invent exact TVS Credit internal policies, fee tables or contract terms. Instead say that exact\n"
+        "   charges and policies depend on the loan agreement and the customer should check their agreement or\n"
+        "   contact TVS Credit customer support.\n"
+        "3. If the user sounds angry or worried, respond in a calm, empathetic tone, and suggest they can talk to a\n"
+        "   human agent or customer care for detailed help.\n"
+        "4. NEVER say you have changed their EMI, waived charges, or updated any record. You are only explaining.\n"
+        "5. Keep answers short, clear and in simple language. Use bullet points when helpful.\n"
     )
 
     prompt = (
@@ -252,7 +265,7 @@ def gemini_policy_answer(user_text: str, customer: dict | None) -> str:
     except Exception:
         logging.exception("Gemini policy answer failed")
         return (
-            "I'm having trouble fetching detailed information right now.\n"
+            "I'm having trouble fetching a detailed explanation right now.\n"
             "For specific policy or charge-related questions, please check your loan agreement "
             "or contact TVS Credit customer support.\n"
             "You can still use:\n"
@@ -260,6 +273,7 @@ def gemini_policy_answer(user_text: str, customer: dict | None) -> str:
             "- 'STATUS' → check EMI status\n"
             "- 'AGENT' → talk to a human\n"
         )
+
 
 
 def handle_text_message(body: str, from_number: str) -> str:
@@ -302,22 +316,42 @@ def handle_text_message(body: str, from_number: str) -> str:
     def is_angry(threshold: float = 0.6) -> bool:
         return (sentiment == "ANGRY") and (sent_conf or 0.0) >= threshold
 
-    # -------- 🔥 0.1 Dispute / harassment detection (high-priority) --------
+    # -------- 🔥 0.1 Dispute / harassment / DNC detection (high-priority) --------
     dispute_keywords = [
         "fraud",
         "cheat",
         "scam",
         "harass",
         "harassment",
+        "harrasment",          # typo
+        "harassing",
         "police",
         "legal",
         "case",
         "consumer court",
         "complaint",
-        "not my loan",
-        "not my emi",
         "wrong number",
+        "do not call",
+        "dont call",
+        "don't call",
+        "stop calling",
+        "stop messaging",
+        "stop msg",
+        "disturbing me",
+        "stop disturbing",
     ]
+
+    has_dispute_word = any(k in text for k in dispute_keywords)
+
+    if has_dispute_word:
+        return (
+            "I'm really sorry you're facing this issue.\n"
+            "This looks like a dispute, complaint or a request to stop communication. "
+            "For your safety and proper resolution, a human agent should handle this.\n"
+            "We will avoid further automated messages on this channel.\n"
+            "Please contact TVS Credit customer care or type 'AGENT' and we will arrange a call back."
+        )
+
 
     if is_negative() and any(k in text for k in dispute_keywords):
         return (
@@ -504,15 +538,17 @@ def handle_text_message(body: str, from_number: str) -> str:
             + "\n\nIf this doesn't fully answer your question, you can type 'AGENT' to talk to a human."
         )
 
-    # -------- 9) FALLBACK → simple reply (no LLM) --------
-    base = llm_fallback_reply(body, customer)
+    # -------- 9) FALLBACK → Gemini general EMI chat --------
+    answer = gemini_policy_answer(body, customer)
+
     if is_angry():
         return (
-            "I can see you’re upset. I’m limited in what I can do here, "
-            "but for serious complaints, a human agent is best.\n"
-            + base
+            "I can see you’re upset. I’ll still try to help:\n"
+            + answer
         )
-    return base
+
+    return answer
+
 
 
 # ------------------ FLASK APP ------------------
