@@ -80,12 +80,17 @@ def normalize_phone(phone: str):
     if phone.startswith("0"):
         phone = phone.lstrip("0")
 
-    # Ensure +91 prefix
-    if not phone.startswith("+"):
+    # Ensure +91, but avoid double 91
+    if phone.startswith("+"):
+        return phone
+
+    # If already looks like 91XXXXXXXXXX, just add +
+    if phone.startswith("91") and len(phone) == 12:
+        phone = "+" + phone
+    else:
         phone = "+91" + phone.lstrip("+")
 
     return phone
-
 
 
 def log_call_entry(phone, action, outcome, payment_link=None, customer_id=None):
