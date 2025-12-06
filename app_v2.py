@@ -941,6 +941,7 @@ def chat_api():
     body = data.get("message", "")
     from_number = data.get("from", "+919064476365")
     reply = handle_text_message(body, from_number)
+    customer = get_customer(from_number)
     return jsonify({"reply": reply})
 
 
