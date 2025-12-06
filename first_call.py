@@ -42,14 +42,27 @@ customers = Table("customers", metadata, autoload_with=engine)
 
 
 # ------------------ HELPER: NORMALIZE PHONE ------------------
-def normalize_phone(phone: str) -> str:
+def normalize_phone(phone: str):
     if not phone:
-        return phone
-    phone = phone.strip().replace(" ", "").replace("-", "")
+        return None
+
+    phone = phone.strip()
+
+    # Strip Twilio WhatsApp prefix if present
+    if phone.startswith("whatsapp:"):
+        phone = phone[len("whatsapp:"):]
+
+    # Remove spaces and dashes
+    phone = phone.replace(" ", "").replace("-", "")
+
+    # Remove leading 0s (like 09876...)
     if phone.startswith("0"):
         phone = phone.lstrip("0")
+
+    # Add +91 if no country code prefix
     if not phone.startswith("+"):
-        phone = "+91" + phone
+        phone = "+91" + phone.lstrip("+")
+
     return phone
 
 
