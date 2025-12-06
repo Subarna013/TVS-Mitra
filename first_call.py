@@ -1,13 +1,10 @@
+# first_call.py
 import os
 from twilio.rest import Client
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Table, MetaData, select, update, or_
 from datetime import date, timedelta
-import razorpay  # 🔹 Razorpay SDK
-from risk_inference import score_customer_risk
-from sqlalchemy import func  # if not already
-from sqlalchemy import update
-from payment_predict_inference import predict_payment_probability
+import razorpay  # Razorpay SDK
 
 # ------------------ LOAD ENV ------------------
 load_dotenv()
@@ -18,10 +15,10 @@ twilio_number = os.getenv("TWILIO_PHONE_NUMBER")        # for voice calls (norma
 bot_url = os.getenv("BOT_URL")                          # e.g., https://tvs-mitra-1.onrender.com
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# 🔹 Twilio WhatsApp Sandbox number (fixed)
+# Twilio WhatsApp Sandbox number
 TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
 
-# 🔹 Razorpay keys
+# Razorpay keys
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
 
@@ -63,7 +60,6 @@ def create_razorpay_payment_link_for_customer(cust):
     Does NOT send any SMS/WhatsApp — just returns the link.
     """
     try:
-        # cust.emi_amount is likely Decimal -> cast to float
         amount_rupees = float(cust.emi_amount)
         amount_paise = int(round(amount_rupees * 100))
 
@@ -101,7 +97,8 @@ def _place_call_to_customer(cust, bucket: str):
         return
 
     # Avoid calling more than once per day
-    if getattr(cust, "last_call_date", None) == date.today():
+    from datetime import date as _date
+    if getattr(cust, "last_call_date", None) == _date.today():
         print(f"⏭️ Skipping {cust.name}, already called today.")
         return
 
@@ -125,10 +122,11 @@ def _place_call_to_customer(cust, bucket: str):
 
         # 2️⃣ Update last_call_date in DB
         with engine.begin() as conn:
+            from datetime import date as _date
             stmt = (
                 update(customers)
                 .where(customers.c.phone == cust.phone)
-                .values(last_call_date=date.today())
+                .values(last_call_date=_date.today())
             )
             conn.execute(stmt)
 
@@ -152,8 +150,8 @@ def _place_call_to_customer(cust, bucket: str):
             )
 
             client.messages.create(
-                to=f"whatsapp:{phone}",           # send to your WhatsApp number
-                from_=TWILIO_WHATSAPP_NUMBER,     # Twilio WhatsApp sandbox number
+                to=f"whatsapp:{phone}",
+                from_=TWILIO_WHATSAPP_NUMBER,
                 body=wa_body,
             )
             print(f"✉️ WhatsApp (chatbot + payment link) sent to {cust.name} ({phone})")
@@ -178,12 +176,19 @@ def call_customers():
                 customers.c.due_date <= today + timedelta(days=3),
                 customers.c.due_date > today,
             )
-            pre_due_raw = conn.execute(pre_due_query).fetchall()
-            due_raw = conn.execute(due_query).fetchall()
+            pre_due_customers = conn.execute(pre_due_query).fetchall()
 
-            pre_due_customers = attach_risk_scores(pre_due_raw)
-            due_customers = attach_risk_scores(due_raw)
-
+            # 2) DUE / OVERDUE:
+            #    - EMI due today or earlier
+            #    - OR due_date is NULL (treat as DUE so they are not ignored)
+            due_query = select(customers).where(
+                customers.c.payment_status == "Pending",
+                or_(
+                    customers.c.due_date <= today,
+                    customers.c.due_date.is_(None),
+                ),
+            )
+            due_customers = conn.execute(due_query).fetchall()
 
     except Exception as e:
         print(f"❌ Error fetching customers: {e}")
@@ -196,20 +201,16 @@ def call_customers():
     # --------- Pass 1: PRE-DUE REMINDERS ----------
     if pre_due_customers:
         print(f"📞 Calling PRE-DUE customers (count = {len(pre_due_customers)})...")
-        for cust, risk_score, risk_bucket in pre_due_customers:
-            print(f"📊 PRE-DUE: {cust.name} | Risk={risk_score:.2f} ({risk_bucket})")
+        for cust in pre_due_customers:
             _place_call_to_customer(cust, bucket="pre_due")
-
     else:
         print("ℹ️ No pre-due customers to call.")
 
     # --------- Pass 2: DUE / OVERDUE COLLECTIONS ----------
     if due_customers:
         print(f"📞 Calling DUE/OVERDUE customers (count = {len(due_customers)})...")
-        for cust, risk_score, risk_bucket in due_customers:
-            print(f"📊 DUE: {cust.name} | Risk={risk_score:.2f} ({risk_bucket})")
+        for cust in due_customers:
             _place_call_to_customer(cust, bucket="due")
-
     else:
         print("ℹ️ No due/overdue customers to call.")
 
@@ -224,25 +225,6 @@ def make_call_to_customer(phone_number, bucket: str = "manual"):
         url=f"{bot_url}/voice?bucket={bucket}",
     )
     print(f"📞 Manual call initiated to {phone}, SID: {call.sid}")
-
-
-def attach_risk_scores(customers_rows):
-    enriched = []
-    with engine.begin() as conn:
-        for cust in customers_rows:
-            risk_score, risk_bucket = score_customer_risk(cust)
-            enriched.append((cust, risk_score, risk_bucket))
-
-            # Optional: write back to DB
-            stmt = (
-                update(customers)
-                .where(customers.c.id == cust.id)
-                .values(risk_score=risk_score, risk_bucket=risk_bucket)
-            )
-            conn.execute(stmt)
-
-    enriched.sort(key=lambda x: x[1], reverse=True)
-    return enriched
 
 
 # ------------------ MAIN ------------------
