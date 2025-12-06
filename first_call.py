@@ -4,6 +4,10 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, Table, MetaData, select, update, or_
 from datetime import date, timedelta
 import razorpay  # 🔹 Razorpay SDK
+from risk_inference import score_customer_risk
+from sqlalchemy import func  # if not already
+from sqlalchemy import update
+from payment_predict_inference import predict_payment_probability
 
 # ------------------ LOAD ENV ------------------
 load_dotenv()
@@ -174,19 +178,12 @@ def call_customers():
                 customers.c.due_date <= today + timedelta(days=3),
                 customers.c.due_date > today,
             )
-            pre_due_customers = conn.execute(pre_due_query).fetchall()
+            pre_due_raw = conn.execute(pre_due_query).fetchall()
+            due_raw = conn.execute(due_query).fetchall()
 
-            # 2) DUE / OVERDUE:
-            #    - EMI due today or earlier
-            #    - OR due_date is NULL (treat as DUE so they are not ignored)
-            due_query = select(customers).where(
-                customers.c.payment_status == "Pending",
-                or_(
-                    customers.c.due_date <= today,
-                    customers.c.due_date.is_(None),
-                ),
-            )
-            due_customers = conn.execute(due_query).fetchall()
+            pre_due_customers = attach_risk_scores(pre_due_raw)
+            due_customers = attach_risk_scores(due_raw)
+
 
     except Exception as e:
         print(f"❌ Error fetching customers: {e}")
@@ -199,16 +196,20 @@ def call_customers():
     # --------- Pass 1: PRE-DUE REMINDERS ----------
     if pre_due_customers:
         print(f"📞 Calling PRE-DUE customers (count = {len(pre_due_customers)})...")
-        for cust in pre_due_customers:
+        for cust, risk_score, risk_bucket in pre_due_customers:
+            print(f"📊 PRE-DUE: {cust.name} | Risk={risk_score:.2f} ({risk_bucket})")
             _place_call_to_customer(cust, bucket="pre_due")
+
     else:
         print("ℹ️ No pre-due customers to call.")
 
     # --------- Pass 2: DUE / OVERDUE COLLECTIONS ----------
     if due_customers:
         print(f"📞 Calling DUE/OVERDUE customers (count = {len(due_customers)})...")
-        for cust in due_customers:
+        for cust, risk_score, risk_bucket in due_customers:
+            print(f"📊 DUE: {cust.name} | Risk={risk_score:.2f} ({risk_bucket})")
             _place_call_to_customer(cust, bucket="due")
+
     else:
         print("ℹ️ No due/overdue customers to call.")
 
@@ -223,6 +224,25 @@ def make_call_to_customer(phone_number, bucket: str = "manual"):
         url=f"{bot_url}/voice?bucket={bucket}",
     )
     print(f"📞 Manual call initiated to {phone}, SID: {call.sid}")
+
+
+def attach_risk_scores(customers_rows):
+    enriched = []
+    with engine.begin() as conn:
+        for cust in customers_rows:
+            risk_score, risk_bucket = score_customer_risk(cust)
+            enriched.append((cust, risk_score, risk_bucket))
+
+            # Optional: write back to DB
+            stmt = (
+                update(customers)
+                .where(customers.c.id == cust.id)
+                .values(risk_score=risk_score, risk_bucket=risk_bucket)
+            )
+            conn.execute(stmt)
+
+    enriched.sort(key=lambda x: x[1], reverse=True)
+    return enriched
 
 
 # ------------------ MAIN ------------------
