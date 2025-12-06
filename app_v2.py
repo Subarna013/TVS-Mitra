@@ -11,16 +11,36 @@ from dotenv import load_dotenv
 import hmac
 import hashlib
 import difflib
+from intents_inference import predict_intent
+from sentiments_inference import predict_sentiment
+import google.generativeai as genai
+from payment_inference import predict_payment_probability
 
 # ------------------ SETUP ------------------
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
+
+# ------------------ GEMINI SETUP ------------------
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+gemini_model = None
+
+if GEMINI_API_KEY:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+        logging.info("✅ Gemini model initialised.")
+    except Exception:
+        logging.exception("❌ Failed to init Gemini model")
+        gemini_model = None
+else:
+    logging.warning("⚠️ GEMINI_API_KEY not set. Gemini features disabled.")
 
 # Twilio setup
 twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
 twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
 twilio_number = os.getenv("TWILIO_PHONE_NUMBER")
 twilio_client = Client(twilio_sid, twilio_token)
+
 # WhatsApp (Sandbox) sender
 TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"  # Twilio WhatsApp Sandbox number
 
@@ -133,7 +153,7 @@ def create_razorpay_payment_link(customer_name, customer_contact, amount_rupees)
 
 
 def send_payment_link(customer):
-    """Send Razorpay payment link via Twilio SMS (with fallback + phone normalization)."""
+    """Send Razorpay payment link via WhatsApp (with fallback + phone normalization)."""
     try:
         phone = normalize_phone(customer["phone"])
 
@@ -149,7 +169,7 @@ def send_payment_link(customer):
             link = "https://example.com/demo-emi-payment"
             logging.warning("⚠️ Razorpay link failed, using fallback demo link.")
 
-        # 3) Send SMS
+        # 3) Send WhatsApp message
         msg = twilio_client.messages.create(
             to=f"whatsapp:{phone}",
             from_=TWILIO_WHATSAPP_NUMBER,
@@ -157,19 +177,19 @@ def send_payment_link(customer):
         )
 
         logging.info(
-            f"✅ SMS sent from {twilio_number} to {phone}, SID={msg.sid}, link={link}"
+            f"✅ WhatsApp sent from {TWILIO_WHATSAPP_NUMBER} to {phone}, SID={msg.sid}, link={link}"
         )
         return link
 
     except Exception:
-        logging.exception("❌ Failed to send payment link SMS")
+        logging.exception("❌ Failed to send payment link WhatsApp")
         return None
 
 
 def llm_fallback_reply(user_text: str, customer: dict | None) -> str:
     """
     Fallback reply when no specific rule matched.
-    No external LLM used (to avoid quota / extra deps).
+    No external LLM used here – we keep it simple + safe.
     """
     return (
         "I'm still learning to handle more questions.\n"
@@ -178,21 +198,137 @@ def llm_fallback_reply(user_text: str, customer: dict | None) -> str:
         "- Type 'STATUS' to see EMI amount and status\n"
         "- Type 'WHY SHOULD I PAY' to understand your EMI\n"
         "- Type 'I ALREADY PAID' if you've already paid\n"
-        "- Type 'AGENT' to talk to a human\n"
+        "- 'AGENT' to talk to a human\n"
     )
+
+
+def gemini_policy_answer(user_text: str, customer: dict | None) -> str:
+    """
+    Use Gemini to answer EMI / loan / policy / finance questions.
+    This is your 'RAG-like' FAQ brain without maintaining faq_data.txt.
+    """
+    if gemini_model is None:
+        # fallback if Gemini not available
+        return (
+            "I can help with basic EMI options:\n"
+            "- 'PAY' → payment link\n"
+            "- 'STATUS' → EMI status\n"
+            "- 'WHY SHOULD I PAY' → EMI explanation\n"
+            "- 'AGENT' → talk to a human\n"
+        )
+
+    customer_context = ""
+    if customer:
+        customer_context = (
+            f"Customer EMI context (may be partial):\n"
+            f"- EMI amount: {customer.get('emi_amount')}\n"
+            f"- Due date: {customer.get('due_date')}\n"
+            f"- Payment status: {customer.get('payment_status')}\n"
+        )
+
+    system_instruction = (
+        "You are TVS Mitra, an assistant for an Indian NBFC's EMI collections team.\n"
+        "Answer questions about EMI, loans, basic finance, late fees, bounce charges, etc., "
+        "in simple language.\n"
+        "If the user asks about exact internal TVS Credit policies or precise fee amounts, "
+        "say that policies may vary and they should check their loan agreement or contact customer support.\n"
+        "Do NOT invent exact fees, dates, or contract terms.\n"
+    )
+
+    prompt = (
+        system_instruction
+        + "\n\n"
+        + customer_context
+        + "\nUser question:\n"
+        + user_text
+    )
+
+    try:
+        resp = gemini_model.generate_content(prompt)
+        answer = (resp.text or "").strip()
+        if not answer:
+            raise ValueError("Empty Gemini answer")
+        return answer
+    except Exception:
+        logging.exception("Gemini policy answer failed")
+        return (
+            "I'm having trouble fetching detailed information right now.\n"
+            "For specific policy or charge-related questions, please check your loan agreement "
+            "or contact TVS Credit customer support.\n"
+            "You can still use:\n"
+            "- 'PAY' → get EMI link\n"
+            "- 'STATUS' → check EMI status\n"
+            "- 'AGENT' → talk to a human\n"
+        )
 
 
 def handle_text_message(body: str, from_number: str) -> str:
     """
     Common handler for SMS + Web chat messages.
-    Smart rule-based NLP: PAY / STATUS / WHY / ALREADY PAID / AGENT / HELP / DOUBT
-    + small-talk + typo handling.
+    Uses:
+      - ML intent classifier
+      - Sentiment classifier
+      - Gemini for FAQ/policy/general questions
+      - Payment prediction model
+      - Existing rule-based logic for EMI flows
     """
     text = (body or "").strip().lower()
     customer = get_customer(from_number)
 
-    # -------- 0) Generic HELP / MENU --------
-    if text in ["hi", "hello", "hey"]:
+    # 🔮 Optional: predictive score (may be None if model not loaded)
+    payment_prob = None
+    if customer:
+        try:
+            payment_prob = predict_payment_probability(customer)
+        except Exception:
+            logging.exception("Payment prediction failed")
+            payment_prob = None
+
+    # -------- 🔮 0) Predict intent + sentiment using ML models --------
+    intent, intent_conf = predict_intent(text)
+    sentiment, sent_conf = predict_sentiment(text)
+
+    logging.info(
+        f"🧠 Intent={intent} ({intent_conf:.2f}), "
+        f"Sentiment={sentiment} ({sent_conf:.2f})"
+    )
+
+    def is_intent(label: str, threshold: float = 0.6) -> bool:
+        return intent == label and (intent_conf or 0.0) >= threshold
+
+    def is_negative(threshold: float = 0.6) -> bool:
+        return (sentiment in ["ANGRY", "NEGATIVE"]) and (sent_conf or 0.0) >= threshold
+
+    def is_angry(threshold: float = 0.6) -> bool:
+        return (sentiment == "ANGRY") and (sent_conf or 0.0) >= threshold
+
+    # -------- 🔥 0.1 Dispute / harassment detection (high-priority) --------
+    dispute_keywords = [
+        "fraud",
+        "cheat",
+        "scam",
+        "harass",
+        "harassment",
+        "police",
+        "legal",
+        "case",
+        "consumer court",
+        "complaint",
+        "not my loan",
+        "not my emi",
+        "wrong number",
+    ]
+
+    if is_negative() and any(k in text for k in dispute_keywords):
+        return (
+            "I'm really sorry you're facing this issue.\n"
+            "This looks like a dispute or complaint. "
+            "For your safety and proper resolution, a human agent should handle this.\n"
+            "Please contact TVS Credit customer care or type 'AGENT' and we will arrange a call back."
+        )
+
+    # -------- 1) GREET / HELP (intent or keyword) --------
+    if is_intent("GREET") or text in ["hi", "hello", "hey"]:
         return (
             "Hello! This is TVS Mitra.\n"
             "You can type:\n"
@@ -203,7 +339,7 @@ def handle_text_message(body: str, from_number: str) -> str:
             "- 'AGENT' to request a call from an agent\n"
         )
 
-    if "help" in text or "options" in text or "menu" in text:
+    if is_intent("HELP_MENU") or "help" in text or "options" in text or "menu" in text:
         return (
             "Here are some things I can help with:\n"
             "- 'PAY' → get EMI payment link\n"
@@ -217,10 +353,10 @@ def handle_text_message(body: str, from_number: str) -> str:
     if "love you" in text or "luv u" in text or "i love u" in text:
         return "Haha, I'm just your TVS Mitra EMI assistant, but I'm always here to help you 🤝"
 
-    if "joke" in text or "funny" in text or "laugh" in text:
+    if is_intent("SMALL_TALK") or "joke" in text or "funny" in text or "laugh" in text:
         return "Here’s a finance joke: Why did the EMI go to school? To become a little more payable every month. 😄"
 
-    # -------- Customer not found --------
+    # -------- 2) Customer not found --------
     if not customer:
         if "why" in text and "pay" in text:
             return (
@@ -233,20 +369,19 @@ def handle_text_message(body: str, from_number: str) -> str:
             "Please contact TVS Credit support or try again from your registered mobile number."
         )
 
-    # Extract customer context
+    # ---- Extract customer context ----
     status = (customer.get("payment_status") or "").lower()
     emi_amount = customer.get("emi_amount")
     due_date = customer.get("due_date")
 
-    # -------- 1) PAY / PAYMENT LINK --------
-    if text in ["pay", "pay now", "payment", "link"]:
+    # -------- 3) PAY / PAYMENT LINK (intent or keyword) --------
+    if is_intent("PAY_INTENT") or text in ["pay", "pay now", "payment", "link"]:
         link = create_razorpay_payment_link(
             customer["name"],
             customer["phone"],
             customer["emi_amount"],
         )
 
-        # ✅ Fallback so you NEVER show 'None'
         if not link:
             link = "https://example.com/demo-emi-payment"
 
@@ -258,32 +393,47 @@ def handle_text_message(body: str, from_number: str) -> str:
             customer_id=customer["id"],
         )
 
-        return f"Hello {customer['name']}! Pay your EMI here: {link}"
+        prefix = ""
+        if is_negative():
+            prefix = "I understand money can be stressful. "
+        return f"{prefix}Hello {customer['name']}! Pay your EMI here: {link}"
 
-    # -------- 2) STATUS (with typo tolerance: sdatus, sttaus, etc.) --------
+    # -------- 4) STATUS (intent or keyword, typo tolerant) --------
     words = text.split()
     close_to_status = any(
         difflib.get_close_matches(w, ["status"], cutoff=0.7) for w in words
     )
-    if "status" in text or close_to_status:
+    if is_intent("STATUS_QUERY") or "status" in text or close_to_status:
         msg = f"EMI status for {customer['name']}:\n"
         if emi_amount is not None:
             msg += f"- EMI Amount: ₹{emi_amount}\n"
         if due_date:
             msg += f"- Due Date: {due_date}\n"
         msg += f"- Current Status: {customer['payment_status']}"
+
+        # 🔮 Add predicted probability (if available)
+        if payment_prob is not None:
+            msg += (
+                f"\n- Predicted payment probability (next cycle): {payment_prob:.2f}"
+            )
+
         return msg
 
-    # -------- 3) WHY SHOULD I PAY --------
-    if "why" in text and "pay" in text:
+    # -------- 5) WHY SHOULD I PAY (intent or text condition) --------
+    if is_intent("WHY_PAY") or ("why" in text and "pay" in text):
         if status == "paid":
             return (
                 "Our records show your EMI is already PAID. "
                 "Thank you! No further payment is required."
             )
 
+        empathy = ""
+        if is_negative():
+            empathy = "I understand this can feel confusing or difficult.\n"
+
         reason = (
-            "This EMI is due as per your loan agreement with TVS Credit. "
+            empathy
+            + "This EMI is due as per your loan agreement with TVS Credit. "
             "Paying on time helps you avoid late fees and protects your credit score.\n"
         )
         if emi_amount is not None or due_date:
@@ -295,37 +445,74 @@ def handle_text_message(body: str, from_number: str) -> str:
         reason += "\n\nYou can type 'PAY' to get your secure payment link."
         return reason
 
-    # -------- 4) I ALREADY PAID --------
-    if "already paid" in text or ("paid" in text and "already" in text) or text == "i paid":
+    # -------- 6) I ALREADY PAID (intent or keywords) --------
+    if (
+        is_intent("ALREADY_PAID")
+        or "already paid" in text
+        or ("paid" in text and "already" in text)
+        or text == "i paid"
+    ):
         if status == "paid":
             return (
                 "Yes, our records already show this EMI as PAID. "
                 "Thank you! No further action is needed."
             )
+        extra = ""
+        if is_negative():
+            extra = "I’m sorry for the inconvenience.\n"
         return (
-            "Thank you for letting us know. Right now our records still show this EMI as Pending. "
+            extra
+            + "Right now our records still show this EMI as Pending. "
             "If you have already paid, it may take some time to update from the payment gateway. "
             "You can share your payment reference with an agent, or it will auto-update "
             "once we receive confirmation from our partner."
         )
 
-    # -------- 5) AGENT / HUMAN --------
-    if "agent" in text or "human" in text or "call me" in text or "customer care" in text:
+    # -------- 7) AGENT / HUMAN (intent or keywords) --------
+    if (
+        is_intent("AGENT_REQUEST")
+        or "agent" in text
+        or "human" in text
+        or "call me" in text
+        or "customer care" in text
+    ):
+        if is_angry():
+            prefix = (
+                "I’m sorry this experience has been frustrating. "
+                "A human agent will be better able to help you.\n"
+            )
+        else:
+            prefix = ""
         return (
-            "Okay, we will arrange for an agent to contact you on your registered number. "
+            prefix
+            + "Okay, we will arrange for an agent to contact you on your registered number. "
             "For urgent help, please call our customer support helpline."
         )
 
-    # -------- 6) DOUBT / QUESTION --------
-    if "doubt" in text or "question" in text or "confused" in text:
+    # -------- 8) DOUBT / QUESTION / POLICY EXPLANATION --------
+    if (
+        is_intent("DOUBT_QUERY")
+        or "doubt" in text
+        or "question" in text
+        or "confused" in text
+        or "explain" in text
+        or "what is" in text
+    ):
+        answer = gemini_policy_answer(body, customer)
         return (
-            "I can help with basic EMI questions like status and payment. "
-            "Type 'STATUS' to see your EMI details, or 'WHY SHOULD I PAY' to understand this EMI. "
-            "For detailed queries, type 'AGENT' and a human will assist you."
+            answer
+            + "\n\nIf this doesn't fully answer your question, you can type 'AGENT' to talk to a human."
         )
 
-    # -------- 7) FALLBACK → simple reply (no LLM) --------
-    return llm_fallback_reply(body, customer)
+    # -------- 9) FALLBACK → simple reply (no LLM) --------
+    base = llm_fallback_reply(body, customer)
+    if is_angry():
+        return (
+            "I can see you’re upset. I’m limited in what I can do here, "
+            "but for serious complaints, a human agent is best.\n"
+            + base
+        )
+    return base
 
 
 # ------------------ FLASK APP ------------------
