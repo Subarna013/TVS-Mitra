@@ -11,34 +11,20 @@ from dotenv import load_dotenv
 import hmac
 import hashlib
 import difflib
+import re
+
 from intents_inference import predict_intent
 from sentiments_inference import predict_sentiment
 import google.generativeai as genai
 from payment_inference import predict_payment_probability
-import numpy as np
 import psycopg2
+import numpy as np  # kept in case other modules use it; not heavy
 
 # ------------------ SETUP ------------------
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
-# ------------------ RAG FEATURE FLAG ------------------
-# Turn this ON locally in .env (USE_POLICY_RAG=true)
-# Turn this OFF on Render to avoid OOM
-USE_POLICY_RAG = os.getenv("USE_POLICY_RAG", "false").lower() == "true"
-
-policy_model = None
-if USE_POLICY_RAG:
-    try:
-        from sentence_transformers import SentenceTransformer
-        EMB_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-        policy_model = SentenceTransformer(EMB_MODEL_NAME)
-        logging.info(f"✅ Policy embedding model loaded: {EMB_MODEL_NAME}")
-    except Exception:
-        logging.exception("❌ Failed to load policy embedding model")
-        policy_model = None
-else:
-    logging.info("ℹ️ Policy RAG disabled (USE_POLICY_RAG != true)")
+# ❌ NO heavy SentenceTransformer here – we do lightweight keyword RAG over policy_chunks
 
 # ------------------ GEMINI SETUP ------------------
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -46,6 +32,7 @@ gemini_model = None
 
 if GEMINI_API_KEY:
     try:
+        # If this 404s, we still have fallback from policy text
         genai.configure(api_key=GEMINI_API_KEY)
         gemini_model = genai.GenerativeModel("gemini-1.5-flash")
         logging.info("✅ Gemini model initialised.")
@@ -111,9 +98,6 @@ def normalize_phone(phone: str):
         phone = "+91" + phone.lstrip("+")
 
     return phone
-
-
-import difflib  # already imported, but kept here for clarity
 
 
 def fuzzy_contains_any(text: str, keywords: list[str], cutoff: float = 0.8) -> bool:
@@ -351,7 +335,6 @@ def send_payment_link(customer):
 def llm_fallback_reply(user_text: str, customer: dict | None) -> str:
     """
     Fallback reply when no specific rule matched.
-    No external LLM used here – we keep it simple + safe.
     """
     return (
         "I'm still learning to handle more questions.\n"
@@ -723,11 +706,11 @@ def handle_text_message(body: str, from_number: str) -> str:
         or "confused" in text
         or "explain" in text
         or "what is" in text
-        or looks_like_question(text)  # 👈 NEW: catches "What happens if I miss my EMI due date?"
+        or looks_like_question(text)  # 👈 catches things like "What happens if I miss my EMI due date?"
     ):
         logging.info("🧩 RAG/Policy branch triggered for: %s", text)
 
-        # 🔍 Fetch relevant TVS policy chunks (only if RAG enabled/model loaded)
+        # 🔍 Fetch relevant TVS policy chunks (keyword-based, no heavy model)
         policy_snippets = retrieve_policy_chunks(body)
         logging.info("🧩 Retrieved %d policy snippets", len(policy_snippets))
 
@@ -737,7 +720,7 @@ def handle_text_message(body: str, from_number: str) -> str:
             + "\n\nIf this doesn't fully answer your question, you can type 'AGENT' to talk to a human."
         )
 
-    # -------- 9) FALLBACK → Gemini general EMI chat --------
+    # -------- 9) FALLBACK → Gemini general EMI chat / policies --------
     answer = gemini_policy_answer(body, customer)
 
     if is_angry():
@@ -746,49 +729,98 @@ def handle_text_message(body: str, from_number: str) -> str:
     return answer
 
 
+# ---------- Lightweight keyword RAG over policy_chunks ----------
+STOPWORDS = {
+    "the", "is", "a", "an", "of", "to", "for", "on", "in", "and", "or", "if", "this",
+    "that", "such", "as", "be", "are", "was", "were", "it", "by", "from", "with",
+    "can", "may", "not", "will", "do", "does", "your", "you", "our",
+}
+
+
+def tokenize(text: str) -> set[str]:
+    tokens = re.findall(r"[a-zA-Z0-9]+", (text or "").lower())
+    return {t for t in tokens if t not in STOPWORDS}
+
+
+def score_chunk(query_tokens: set[str], query_text: str, chunk_text: str) -> float:
+    """
+    Simple scoring:
+    - overlap of content words
+    - plus small bonus for domain phrases
+    """
+    chunk_lower = (chunk_text or "").lower()
+    chunk_tokens = tokenize(chunk_text)
+
+    # base score: token overlap
+    overlap = len(query_tokens & chunk_tokens)
+
+    # phrase bonuses
+    bonus = 0.0
+
+    q = query_text.lower()
+
+    # late payment / missed EMI
+    if ("miss" in q or "missed" in q) and "emi" in q:
+        if "late" in chunk_lower or "overdue" in chunk_lower or "penal" in chunk_lower:
+            bonus += 3.0
+
+    # bounce / return
+    if "bounce" in q or "bounced" in q or "return" in q:
+        if "bounce" in chunk_lower or "returned unpaid" in chunk_lower:
+            bonus += 2.0
+
+    # restructuring / moratorium / hardship
+    if "moratorium" in q or "restructure" in q or "restructuring" in q:
+        if "moratorium" in chunk_lower or "restructuring" in chunk_lower:
+            bonus += 2.5
+
+    if "hardship" in q or "job loss" in q or "lost my job" in q:
+        if "hardship" in chunk_lower or "genuine financial hardship" in chunk_lower:
+            bonus += 2.5
+
+    # foreclosure / preclosure / noc
+    if "foreclose" in q or "preclose" in q or "closure" in q or "noc" in q:
+        if "foreclose" in chunk_lower or "pre-close" in chunk_lower or "no objection certificate" in chunk_lower or "noc" in chunk_lower:
+            bonus += 2.0
+
+    return float(overlap) + bonus
+
+
 def retrieve_policy_chunks(query: str, top_k: int = 5):
     """
-    Given a user query, return top_k relevant policy chunks (list of strings).
-    Embeddings are stored as comma-separated floats in TEXT column.
+    Lightweight RAG: fetch policy_chunks from DB and rank them
+    using keyword overlap + domain-specific phrase bonuses.
     """
-    if policy_model is None:
-        logging.info("Policy model not loaded or RAG disabled; skipping retrieval.")
-        return []
-
     try:
-        # Encode query
-        q_emb = policy_model.encode([query])[0]  # shape (384,)
-        q_norm = np.linalg.norm(q_emb) + 1e-8
+        query_tokens = tokenize(query)
+        q_text = query or ""
 
-        # Fetch all chunks from DB
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        cur.execute("SELECT chunk_text, embedding FROM policy_chunks")
+        # We only really need chunk_text; embedding column can exist but is ignored
+        cur.execute("SELECT chunk_text FROM policy_chunks")
         rows = cur.fetchall()
         cur.close()
         conn.close()
 
         scored = []
-
-        for chunk_text, emb_str in rows:
-            if not emb_str:
+        for (chunk_text,) in rows:
+            if not chunk_text:
                 continue
-            try:
-                # parse "0.1234,0.5678,..." -> numpy array
-                vec = np.fromstring(emb_str, sep=",", dtype=float)
-                if vec.size == 0:
-                    continue
+            s = score_chunk(query_tokens, q_text, chunk_text)
+            scored.append((s, chunk_text))
 
-                v_norm = np.linalg.norm(vec) + 1e-8
-                sim = float(np.dot(q_emb, vec) / (q_norm * v_norm))
-                scored.append((sim, chunk_text))
-            except Exception:
-                continue
+        if not scored:
+            logging.info("No policy_chunks rows found")
+            return []
 
-        # sort by similarity (highest first)
         scored.sort(key=lambda x: x[0], reverse=True)
 
-        # return top_k texts
+        # If everything has score 0, just return the first few generic chunks
+        if scored[0][0] <= 0:
+            logging.info("All chunk scores <= 0; returning first %d chunks", top_k)
+            return [t for (_, t) in scored[:top_k]]
+
         return [t for (s, t) in scored[:top_k]]
 
     except Exception:
