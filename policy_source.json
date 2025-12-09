@@ -1,0 +1,47 @@
+[
+  {
+    "doc_name": "tvs_emi_basic_faq",
+    "section": "emi_basics_due_dates",
+    "text": "EMI stands for Equated Monthly Instalment and is the fixed amount you repay every month towards your TVS Credit loan, consisting of both principal and interest. Your EMI is usually debited from the bank account registered in your mandate or payment instructions on a scheduled due date mentioned in your loan agreement or repayment schedule. Customers can view their EMI amount and due dates through official TVS Credit channels such as the welcome kit, online account, mobile app, or customer care support to ensure timely payments and avoid penalty charges."
+  },
+  {
+    "doc_name": "tvs_schedule_of_charges",
+    "section": "late_payment",
+    "text": "If the EMI is not paid on or before the due date, TVS Credit may levy late repayment or penal charges on the overdue instalment, as specified in the applicable Schedule of Charges and the loan contract. These charges are over and above the regular interest on the loan and are generally calculated for the period of delay until the overdue amount is cleared. Continued delays or repeated late payments can result in additional reminders, affect your repayment history, and may negatively impact your credit score with credit bureaus."
+  },
+  {
+    "doc_name": "tvs_schedule_of_charges",
+    "section": "bounce_charges",
+    "text": "If the EMI payment instrument, such as an auto-debit mandate, NACH, ECS, or cheque, is returned unpaid due to insufficient balance or any other reason, bounce or return charges may be applied as per TVS Credit’s Schedule of Charges. These charges are levied for each unsuccessful presentation of the repayment instrument and are separate from late payment or penal interest. Customers are advised to maintain sufficient funds in the registered bank account before the due date to avoid bounce charges, GST on such charges, and additional follow-ups from the collections team."
+  },
+  {
+    "doc_name": "tvs_collection_policy",
+    "section": "collection_process",
+    "text": "When an EMI remains unpaid, TVS Credit generally starts with soft reminders through SMS, calls, emails, app notifications or other approved communication channels to inform the customer about the overdue amount. If the dues are still not cleared, authorised collection representatives may contact the customer or visit the communication or residential address recorded in the loan documents, following internal codes of conduct and regulatory guidelines. The company may also reschedule follow-ups and offer repayment support options where feasible, while continuing to monitor the account for persistent non-payment."
+  },
+  {
+    "doc_name": "tvs_collection_policy",
+    "section": "legal_escalation",
+    "text": "In case of prolonged default or significant overdue amounts, TVS Credit may escalate the account to legal or recovery proceedings as permitted by law and the terms of the finance agreement. This can include issuing formal notices, initiating repossession of the financed asset for secured loans, and pursuing appropriate action before courts or authorised forums. Such escalation may involve additional costs, can lead to adverse credit bureau reporting, and may require the customer to clear all outstanding principal, interest, penal charges and related expenses to regularise or close the account."
+  },
+  {
+    "doc_name": "tvs_restructuring_policy",
+    "section": "moratorium_restructuring",
+    "text": "In situations of genuine financial hardship, such as job loss, income reduction, health issues or large unexpected expenses, a customer may approach TVS Credit to explore the possibility of moratorium or restructuring support if such options are available for the relevant product and period. Any request is typically assessed in line with internal credit policies and applicable regulatory guidelines, and may result in solutions like tenure extension, revised instalments, or short-term payment relief. Approved restructuring can change the overall interest cost and repayment schedule, and may also attract restructuring-related charges as per the applicable schedule."
+  },
+  {
+    "doc_name": "tvs_customer_support",
+    "section": "hardship_support",
+    "text": "Customers who anticipate difficulty in paying upcoming EMIs are encouraged to proactively contact TVS Credit through official customer care numbers, the Saathi app, website, chatbot or branch network. Early disclosure of financial stress allows the team to explain available options that may include payment arrangements, due date clarification, or assessment for restructuring or relief schemes, where applicable. Engaging with the company before an instalment becomes overdue can help reduce the risk of bounce charges, penal interest, recovery visits and negative impact on the customer’s credit profile."
+  },
+  {
+    "doc_name": "tvs_noc_closure_policy",
+    "section": "noc_and_closure",
+    "text": "Once all EMIs and charges are paid and the loan account stands fully settled, TVS Credit processes the closure of the account and issues a No Objection Certificate confirming that the company has no further dues under that agreement. For vehicle or other secured loans, the NOC may be used to remove hypothecation or lien from the registration records with the relevant authority, such as the RTO. Customers can typically obtain or track the NOC through TVS Credit’s digital channels like the Saathi app, website, chatbot, or by contacting customer care and should verify that the closure is updated with credit bureaus after a reasonable time."
+  },
+  {
+    "doc_name": "tvs_foreclosure_policy",
+    "section": "foreclosure_preclosure",
+    "text": "If a customer wishes to foreclose or pre-close the loan by paying the outstanding dues before the scheduled tenure ends, TVS Credit usually provides a settlement or foreclosure amount on request through authorised channels such as customer care, branch, app or website.[web:23][web:26] The total amount may include the remaining principal, interest up to the proposed closure date, and any applicable foreclosure or pre-closure charges as outlined in the Schedule of Charges.[web:6][web:9] After successful payment of the specified amount, the company processes the termination of the agreement and issues relevant closure documents and NOC in line with internal timelines."
+  }
+]

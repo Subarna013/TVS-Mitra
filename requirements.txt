@@ -10,4 +10,3 @@ pandas
 scikit-learn
 joblib
 sentence-transformers==2.7.0
-
