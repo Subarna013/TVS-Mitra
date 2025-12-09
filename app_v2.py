@@ -367,9 +367,15 @@ def llm_fallback_reply(user_text: str, customer: dict | None) -> str:
 def gemini_policy_answer(
     user_text: str, customer: dict | None, extra_context: list[str] | None = None
 ) -> str:
-    if gemini_model is None:
-        return llm_fallback_reply(user_text, customer)
+    """
+    Policy-aware answer function.
 
+    Priority:
+    1) If Gemini works -> use it with RAG context.
+    2) If Gemini fails but we have policy chunks -> build a safe, rule-based answer from chunks.
+    3) If nothing works -> fall back to simple menu reply.
+    """
+    # ---------- 1) Build customer + doc context ----------
     customer_context = ""
     if customer:
         customer_context = (
@@ -385,18 +391,18 @@ def gemini_policy_answer(
     if extra_context:
         joined = "\n\n---\n".join(extra_context)
         doc_context = (
-            "Here are some relevant excerpts from TVS Credit policies and FAQs.\n"
-            "Use ONLY this information + general EMI knowledge. If something is not clear, say so.\n\n"
+            "Here are relevant excerpts from TVS Credit policies and FAQs.\n"
+            "Use ONLY this information plus general EMI concepts. "
+            "If something is not clearly specified, say that exact details depend on the customer's loan agreement "
+            "and they should contact TVS Credit support.\n\n"
             f"{joined}\n\n"
         )
 
     system_instruction = (
-        "You are TVS Mitra, an EMI collections assistant for an Indian NBFC (TVS Credit).\n"
+        "You are TVS Mitra, an EMI collections assistant for TVS Credit.\n"
         "You must answer based ONLY on:\n"
         "- The policy excerpts provided, and\n"
         "- General high-level EMI/credit knowledge.\n"
-        "If the answer is not clearly supported by policies, say that exact details depend on the customer's loan agreement "
-        "and they should contact TVS Credit support.\n"
         "NEVER invent exact fees, dates, or promises.\n"
     )
 
@@ -410,15 +416,29 @@ def gemini_policy_answer(
         + user_text
     )
 
-    try:
-        resp = gemini_model.generate_content(prompt)
-        answer = (resp.text or "").strip()
-        if not answer:
-            raise ValueError("Empty Gemini answer")
-        return answer
-    except Exception:
-        logging.exception("Gemini policy answer failed – using simple fallback")
-        return llm_fallback_reply(user_text, customer)
+    # ---------- 2) Try Gemini if available ----------
+    if gemini_model is not None:
+        try:
+            resp = gemini_model.generate_content(prompt)
+            answer = (resp.text or "").strip()
+            if answer:
+                return answer
+        except Exception:
+            logging.exception("Gemini policy answer failed – falling back to template")
+
+    # ---------- 3) If Gemini failed BUT we have policy chunks, use them directly ----------
+    if extra_context:
+        bullets = "\n\n".join(f"- {c}" for c in extra_context)
+        return (
+            "Here is information based on TVS Credit’s standard EMI and collection policies:\n"
+            f"{bullets}\n\n"
+            "Note: Exact charges, dates and actions can vary by product and your specific loan agreement. "
+            "For precise details, please refer to your sanction letter / schedule of charges "
+            "or contact TVS Credit customer support."
+        )
+
+    # ---------- 4) Last resort ----------
+    return llm_fallback_reply(user_text, customer)
 
 
 def handle_text_message(body: str, from_number: str) -> str:
