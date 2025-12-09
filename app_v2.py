@@ -15,14 +15,30 @@ from intents_inference import predict_intent
 from sentiments_inference import predict_sentiment
 import google.generativeai as genai
 from payment_inference import predict_payment_probability
-from sentence_transformers import SentenceTransformer
 import numpy as np
 import psycopg2
-
 
 # ------------------ SETUP ------------------
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
+
+# ------------------ RAG FEATURE FLAG ------------------
+# Turn this ON locally in .env (USE_POLICY_RAG=true)
+# Turn this OFF on Render to avoid OOM
+USE_POLICY_RAG = os.getenv("USE_POLICY_RAG", "false").lower() == "true"
+
+policy_model = None
+if USE_POLICY_RAG:
+    try:
+        from sentence_transformers import SentenceTransformer
+        EMB_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+        policy_model = SentenceTransformer(EMB_MODEL_NAME)
+        logging.info(f"✅ Policy embedding model loaded: {EMB_MODEL_NAME}")
+    except Exception:
+        logging.exception("❌ Failed to load policy embedding model")
+        policy_model = None
+else:
+    logging.info("ℹ️ Policy RAG disabled (USE_POLICY_RAG != true)")
 
 # ------------------ GEMINI SETUP ------------------
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -38,18 +54,6 @@ if GEMINI_API_KEY:
         gemini_model = None
 else:
     logging.warning("⚠️ GEMINI_API_KEY not set. Gemini features disabled.")
-
-
-# ---- Policy embedding model (for RAG over TVS policies/FAQ) ----
-EMB_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"  # safer name
-
-try:
-    policy_model = SentenceTransformer(EMB_MODEL_NAME)
-    logging.info(f"✅ Policy embedding model loaded: {EMB_MODEL_NAME}")
-except Exception:
-    logging.exception("❌ Failed to load policy embedding model")
-    policy_model = None
-
 
 # Twilio setup
 twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
@@ -108,7 +112,9 @@ def normalize_phone(phone: str):
 
     return phone
 
-import difflib  # you already have this at the top
+
+import difflib  # already imported, but kept here for clarity
+
 
 def fuzzy_contains_any(text: str, keywords: list[str], cutoff: float = 0.8) -> bool:
     """
@@ -178,11 +184,15 @@ def looks_like_hardship(text: str) -> bool:
     t = (text or "").lower()
 
     cant_words = ["cant", "can't", "cannot", "can not", "unable"]
-    if fuzzy_contains_any(t, cant_words, cutoff=0.7) and fuzzy_contains_any(t, ["pay"], cutoff=0.8):
+    if fuzzy_contains_any(t, cant_words, cutoff=0.7) and fuzzy_contains_any(
+        t, ["pay"], cutoff=0.8
+    ):
         return True
 
     # lost job / income issues
-    if fuzzy_contains_any(t, ["lost"], cutoff=0.8) and fuzzy_contains_any(t, ["job", "income", "salary"], cutoff=0.7):
+    if fuzzy_contains_any(t, ["lost"], cutoff=0.8) and fuzzy_contains_any(
+        t, ["job", "income", "salary"], cutoff=0.7
+    ):
         return True
 
     return False
@@ -316,7 +326,9 @@ def llm_fallback_reply(user_text: str, customer: dict | None) -> str:
     )
 
 
-def gemini_policy_answer(user_text: str, customer: dict | None, extra_context: list[str] | None = None) -> str:
+def gemini_policy_answer(
+    user_text: str, customer: dict | None, extra_context: list[str] | None = None
+) -> str:
     if gemini_model is None:
         return llm_fallback_reply(user_text, customer)
 
@@ -371,7 +383,6 @@ def gemini_policy_answer(user_text: str, customer: dict | None, extra_context: l
         return llm_fallback_reply(user_text, customer)
 
 
-
 def handle_text_message(body: str, from_number: str) -> str:
     """
     Common handler for SMS + Web chat messages.
@@ -419,7 +430,7 @@ def handle_text_message(body: str, from_number: str) -> str:
         "scam",
         "harass",
         "harassment",
-        "harrasment",          # typo
+        "harrasment",  # typo
         "harassing",
         "police",
         "legal",
@@ -439,9 +450,8 @@ def handle_text_message(body: str, from_number: str) -> str:
 
     # fuzzy match single-word typos like "fruud" ~ "fraud"
     base_roots = ["fraud", "scam", "cheat", "harass"]
-    has_dispute_word = (
-            fuzzy_contains_any(text, dispute_keywords, cutoff=0.8)
-            or fuzzy_contains_any(text, base_roots, cutoff=0.8)
+    has_dispute_word = fuzzy_contains_any(text, dispute_keywords, cutoff=0.8) or (
+        fuzzy_contains_any(text, base_roots, cutoff=0.8)
     )
 
     if has_dispute_word:
@@ -452,7 +462,6 @@ def handle_text_message(body: str, from_number: str) -> str:
             "We will avoid further automated messages on this channel.\n"
             "Please contact TVS Credit customer care or type 'AGENT' and we will arrange a call back."
         )
-
 
     if is_negative() and any(k in text for k in dispute_keywords):
         return (
@@ -657,7 +666,7 @@ def handle_text_message(body: str, from_number: str) -> str:
         or "explain" in text
         or "what is" in text
     ):
-        # 🔍 Fetch relevant TVS policy chunks
+        # 🔍 Fetch relevant TVS policy chunks (only if RAG enabled)
         policy_snippets = retrieve_policy_chunks(body)
 
         answer = gemini_policy_answer(body, customer, extra_context=policy_snippets)
@@ -670,10 +679,7 @@ def handle_text_message(body: str, from_number: str) -> str:
     answer = gemini_policy_answer(body, customer)
 
     if is_angry():
-        return (
-            "I can see you’re upset. I’ll still try to help:\n"
-            + answer
-        )
+        return "I can see you’re upset. I’ll still try to help:\n" + answer
 
     return answer
 
@@ -683,6 +689,10 @@ def retrieve_policy_chunks(query: str, top_k: int = 5):
     Given a user query, return top_k relevant policy chunks (list of strings).
     Embeddings are stored as comma-separated floats in TEXT column.
     """
+    if policy_model is None:
+        logging.info("Policy model not loaded or RAG disabled; skipping retrieval.")
+        return []
+
     try:
         # Encode query
         q_emb = policy_model.encode([query])[0]  # shape (384,)
@@ -722,9 +732,6 @@ def retrieve_policy_chunks(query: str, top_k: int = 5):
     except Exception:
         logging.exception("Policy retrieval failed")
         return []
-
-
-
 
 
 # ------------------ FLASK APP ------------------
@@ -1092,6 +1099,7 @@ addBubble("Hi, I'm TVS Mitra. Type 'hi' to start or 'pay' to get your EMI paymen
 </html>
 """
 
+
 @app.route("/chat", methods=["GET"])
 def chat_page():
     return Response(CHAT_HTML, mimetype="text/html")
@@ -1103,7 +1111,6 @@ def chat_api():
     body = data.get("message", "")
     from_number = data.get("from", "+919064476365")
     reply = handle_text_message(body, from_number)
-    customer = get_customer(from_number)
     return jsonify({"reply": reply})
 
 
