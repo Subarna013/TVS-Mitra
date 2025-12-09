@@ -198,6 +198,44 @@ def looks_like_hardship(text: str) -> bool:
     return False
 
 
+def looks_like_question(text: str) -> bool:
+    """
+    Detect natural-language questions like:
+    - what happens if...
+    - why are you...
+    - how can I...
+    - when will...
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+
+    # ends with a question mark
+    if t.endswith("?"):
+        return True
+
+    question_patterns = [
+        "what ",
+        "why ",
+        "how ",
+        "when ",
+        "where ",
+        "which ",
+        "who ",
+        "can i ",
+        "should i ",
+        "do i have to ",
+        "what happens",
+        "what will happen",
+    ]
+
+    for q in question_patterns:
+        if t.startswith(q) or f" {q}" in t:
+            return True
+
+    return False
+
+
 def log_call_entry(phone, action, outcome, payment_link=None, customer_id=None):
     try:
         with engine.begin() as conn:
@@ -657,7 +695,7 @@ def handle_text_message(body: str, from_number: str) -> str:
             "For urgent help, please call our customer support helpline."
         )
 
-    # -------- 8) DOUBT / QUESTION / POLICY EXPLANATION --------
+    # -------- 8) DOUBT / QUESTION / POLICY EXPLANATION (RAG) --------
     if (
         is_intent("DOUBT_QUERY")
         or "doubt" in text
@@ -665,9 +703,13 @@ def handle_text_message(body: str, from_number: str) -> str:
         or "confused" in text
         or "explain" in text
         or "what is" in text
+        or looks_like_question(text)  # 👈 NEW: catches "What happens if I miss my EMI due date?"
     ):
-        # 🔍 Fetch relevant TVS policy chunks (only if RAG enabled)
+        logging.info("🧩 RAG/Policy branch triggered for: %s", text)
+
+        # 🔍 Fetch relevant TVS policy chunks (only if RAG enabled/model loaded)
         policy_snippets = retrieve_policy_chunks(body)
+        logging.info("🧩 Retrieved %d policy snippets", len(policy_snippets))
 
         answer = gemini_policy_answer(body, customer, extra_context=policy_snippets)
         return (
