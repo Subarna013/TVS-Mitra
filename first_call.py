@@ -1,7 +1,7 @@
 # first_call.py
 import os
 from datetime import date, timedelta
-
+import phonenumbers
 from dotenv import load_dotenv
 from twilio.rest import Client
 from sqlalchemy import create_engine, MetaData, Table, select, update, or_
@@ -51,39 +51,18 @@ customers = Table("customers", metadata, autoload_with=engine)
 
 
 # ------------------ HELPER: NORMALIZE PHONE ------------------
-def normalize_phone(phone: str) -> str | None:
-    """
-    Make sure phone is in +91XXXXXXXXXX format.
-    Also handles Twilio WhatsApp format 'whatsapp:+91...'.
-    """
-    if not phone:
+
+def normalize_phone(phone, country="IN"):
+    try:
+        parsed = phonenumbers.parse(phone, country)
+        if phonenumbers.is_valid_number(parsed):
+            return phonenumbers.format_number(
+                parsed,
+                phonenumbers.PhoneNumberFormat.E164
+            )
+    except:
         return None
 
-    phone = phone.strip()
-
-    # Handle Twilio WhatsApp format: "whatsapp:+9190..."
-    if phone.startswith("whatsapp:"):
-        phone = phone[len("whatsapp:"):]  # remove the prefix
-
-    # Remove spaces and dashes
-    phone = phone.replace(" ", "").replace("-", "")
-
-    # Remove leading 0s (e.g. 09123456789 -> 9123456789)
-    if phone.startswith("0"):
-        phone = phone.lstrip("0")
-
-    # Ensure +91 prefix
-    # Ensure +91, but avoid double 91
-    if phone.startswith("+"):
-        return phone
-
-    # If already looks like 91XXXXXXXXXX, just add +
-    if phone.startswith("91") and len(phone) == 12:
-        phone = "+" + phone
-    else:
-        phone = "+91" + phone.lstrip("+")
-
-    return phone
 
 
 
