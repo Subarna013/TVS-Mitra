@@ -50,7 +50,8 @@ with engine.connect() as conn:
             )
 
     print("\n=== RECENT CALL LOGS (last 20) ===")
-    if not call_logs:
+
+    if call_logs is None:
         print("ℹ️ 'call_logs' table does not exist yet.")
     else:
         logs = conn.execute(
