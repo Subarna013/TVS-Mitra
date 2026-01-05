@@ -23,37 +23,26 @@ SIM_THRESHOLD = 0.55
 # UTILS
 # =======================
 
-def normalize_vec(v: np.ndarray) -> np.ndarray:
-    norm = np.linalg.norm(v)
-    return v / norm if norm != 0 else v
+def normalize(v: np.ndarray) -> np.ndarray:
+    return v / np.linalg.norm(v)
 
 def parse_embedding(emb_str: str) -> np.ndarray:
-    return normalize_vec(
-        np.array([float(x) for x in emb_str.split(",")])
-    )
+    return normalize(np.array([float(x) for x in emb_str.split(",")]))
 
 # =======================
-# RAG FETCH
+# FETCH CONTEXT
 # =======================
 
 def fetch_policy_context(query: str) -> str | None:
-    """
-    Retrieves relevant policy chunks using vector similarity.
-    Returns None if no relevant context is found.
-    """
-
     if not query or not query.strip():
         return None
 
-    query_emb = normalize_vec(model.encode(query))
+    query_emb = normalize(model.encode(query))
 
-    try:
-        with engine.connect() as conn:
-            rows = conn.execute(
-                text("SELECT chunk_text, embedding FROM policy_chunks")
-            ).fetchall()
-    except Exception:
-        return None
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT chunk_text, embedding FROM policy_chunks")
+        ).fetchall()
 
     if not rows:
         return None
@@ -71,4 +60,4 @@ def fetch_policy_context(query: str) -> str | None:
         return None
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    return "\n\n".join(chunk for _, chunk in scored[:TOP_K])
+    return "\n\n".join(c for _, c in scored[:TOP_K])
