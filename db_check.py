@@ -27,7 +27,7 @@ policy_chunks = metadata.tables.get("policy_chunks")
 with engine.connect() as conn:
 
     print("=== CUSTOMERS ===")
-    results = conn.execute(
+    customers_data = conn.execute(
         select(
             customers.c.id,
             customers.c.name,
@@ -39,10 +39,10 @@ with engine.connect() as conn:
         ).order_by(customers.c.id.asc())
     ).fetchall()
 
-    if not results:
+    if not customers_data:
         print("No customers found.")
     else:
-        for row in results:
+        for row in customers_data:
             print(
                 f"ID={row.id}, Name={row.name}, Phone={row.phone}, "
                 f"Status={row.payment_status}, DueDate={row.due_date}, "
@@ -50,9 +50,8 @@ with engine.connect() as conn:
             )
 
     print("\n=== RECENT CALL LOGS (last 20) ===")
-
     if call_logs is None:
-        print("ℹ️ 'call_logs' table does not exist yet.")
+        print("ℹ️ 'call_logs' table does not exist.")
     else:
         logs = conn.execute(
             select(
@@ -79,7 +78,7 @@ with engine.connect() as conn:
                 )
 
     print("\n=== POLICY CHUNKS ===")
-    if not policy_chunks:
+    if policy_chunks is None:
         print("ℹ️ 'policy_chunks' table does not exist.")
     else:
         count = conn.execute(
