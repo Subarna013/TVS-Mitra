@@ -79,3 +79,9 @@ with engine.connect() as conn:
                     f"Action={row.action}, Outcome={row.outcome}, "
                     f"Link={row.payment_link}, Time={row.created_at}"
                 )
+if "policy_chunks" in metadata.tables:
+    policy_chunks = metadata.tables["policy_chunks"]
+    count = conn.execute(
+        select(policy_chunks.c.id)
+    ).fetchall()
+    print(f"\n=== POLICY CHUNKS ===\nTotal chunks: {len(count)}")
