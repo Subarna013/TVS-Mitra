@@ -6,56 +6,52 @@ from sentence_transformers import SentenceTransformer
 from chatbot.ingest.chunker import chunk_text
 from dotenv import load_dotenv
 
+
+import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 # =======================
 # SETUP
 # =======================
 
 load_dotenv()
-
 DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL not set")
-
 engine = create_engine(DATABASE_URL)
-model = SentenceTransformer("all-MiniLM-L6-v2")
 
-POLICY_FOLDER = "policy_docs"
+model = SentenceTransformer("paraphrase-MiniLM-L3-v2")
+
+POLICY_FOLDER = "chatbot/policy_docs"
+
 
 # =======================
-# INGESTION PIPELINE
+# INGESTION
 # =======================
 
 def ingest():
-    if not os.path.isdir(POLICY_FOLDER):
-        raise RuntimeError(f"Policy folder not found: {POLICY_FOLDER}")
-
     for file in os.listdir(POLICY_FOLDER):
-        if not file.lower().endswith(".txt"):
+        if not file.endswith(".txt"):
             continue
 
-        file_path = os.path.join(POLICY_FOLDER, file)
+        path = os.path.join(POLICY_FOLDER, file)
 
-        with open(file_path, "r", encoding="utf-8") as f:
-            text_data = f.read().strip()
+        with open(path, "r", encoding="utf-8") as f:
+            text_data = f.read()
 
-        if not text_data:
-            continue
-
-        # 1️⃣ Chunking
         chunks = chunk_text(text_data)
         if not chunks:
             continue
 
-        # 2️⃣ Embedding
         embeddings = model.encode(
             chunks,
-            normalize_embeddings=True,
-            show_progress_bar=False
+            batch_size=4,
+            show_progress_bar=True
         )
 
-        # 3️⃣ Atomic DB write
         with engine.begin() as conn:
-            # 🔴 Remove old chunks for this document (idempotent ingestion)
+            # 🔴 Prevent duplicates
             conn.execute(
                 text("DELETE FROM policy_chunks WHERE doc_name = :doc"),
                 {"doc": file}
@@ -64,21 +60,17 @@ def ingest():
             for chunk, emb in zip(chunks, embeddings):
                 conn.execute(
                     text("""
-                        INSERT INTO policy_chunks
-                        (doc_name, chunk_text, embedding)
-                        VALUES (:doc, :chunk, :embedding)
+                        INSERT INTO policy_chunks (doc_name, chunk_text, embedding)
+                        VALUES (:doc, :text, :emb)
                     """),
                     {
                         "doc": file,
-                        "chunk": chunk,
-                        "embedding": ",".join(map(str, emb.tolist())),
+                        "text": chunk,
+                        "emb": ",".join(map(str, emb.tolist()))
                     }
                 )
 
-        print(f"✅ Ingested policy: {file}")
-
-    print("🎉 Policy ingestion complete")
-
+    print("✅ Policy ingestion complete")
 
 if __name__ == "__main__":
     ingest()
