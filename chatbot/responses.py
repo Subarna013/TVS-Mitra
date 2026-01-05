@@ -3,7 +3,7 @@
 from datetime import date
 
 # =======================
-# HELPERS
+# FORMAT HELPERS
 # =======================
 
 def _fmt_date(d):
@@ -11,7 +11,10 @@ def _fmt_date(d):
         return "N/A"
     if isinstance(d, str):
         return d
-    return d.strftime("%d %b %Y")
+    if isinstance(d, date):
+        return d.strftime("%d %b %Y")
+    return "N/A"
+
 
 def _rupees(x):
     try:
@@ -19,16 +22,21 @@ def _rupees(x):
     except Exception:
         return "₹N/A"
 
+
 # =======================
-# MAIN RESPONSE ROUTER
+# RESPONSE ROUTER
 # =======================
 
 def get_response(intent: str, customer: dict | None) -> str:
     """
-    Deterministic, rule-based responses.
-    NO LLM USAGE HERE.
+    Rule-based, deterministic responses.
+    NO LLM usage here.
+    Safe for payments & compliance.
     """
 
+    # -----------------------
+    # DEFAULT VALUES
+    # -----------------------
     name = customer.get("name", "Customer") if customer else "Customer"
     emi_amount = _rupees(customer.get("emi_amount")) if customer else "₹N/A"
     due_date = _fmt_date(customer.get("due_date")) if customer else "N/A"
@@ -40,34 +48,47 @@ def get_response(intent: str, customer: dict | None) -> str:
     if intent == "already_paid":
         if status.lower() == "paid":
             return (
-                f"Thanks {name}, we can see that your EMI has already been received. "
-                "No further action is required from your side."
+                f"Thank you, {name}. Our records show that your EMI payment "
+                "has already been received. No further action is required."
             )
         else:
             return (
-                f"Thanks for letting us know, {name}. "
-                "If you’ve already made the payment, it may take some time to reflect. "
-                "Please keep the payment reference handy. Our team will verify it."
+                f"Thanks for the update, {name}. If you have already made the payment, "
+                "it may take some time to reflect in our system. "
+                "Please keep your payment reference handy for verification."
             )
 
     # -----------------------
     # PAY NOW
     # -----------------------
     if intent == "pay_now":
+        if not customer:
+            return (
+                "I’m unable to locate your account details at the moment. "
+                "Please contact TVS Credit support for assistance."
+            )
+
         return (
-            f"{name}, your EMI amount is {emi_amount} with due date {due_date}. "
-            "You can complete the payment using the secure link we shared earlier."
+            f"{name}, your EMI amount is {emi_amount} and the due date is {due_date}. "
+            "You can complete the payment using the secure payment link "
+            "shared with you via SMS or WhatsApp."
         )
 
     # -----------------------
     # STATUS
     # -----------------------
     if intent == "status":
+        if not customer:
+            return (
+                "I’m unable to find your account details. "
+                "Please check your registered phone number or contact support."
+            )
+
         return (
-            f"Here is your EMI status, {name}:\n"
-            f"- Amount: {emi_amount}\n"
-            f"- Due date: {due_date}\n"
-            f"- Current status: {status}"
+            f"Here are your EMI details, {name}:\n"
+            f"- EMI Amount: {emi_amount}\n"
+            f"- Due Date: {due_date}\n"
+            f"- Current Status: {status}"
         )
 
     # -----------------------
@@ -76,13 +97,14 @@ def get_response(intent: str, customer: dict | None) -> str:
     if intent == "why_pay":
         return (
             "EMI payments help keep your loan account in good standing. "
-            "Timely payments avoid late charges and ensure uninterrupted service."
+            "Timely payments help avoid late charges and ensure uninterrupted services."
         )
 
     # -----------------------
-    # UNKNOWN / FALLBACK
+    # FALLBACK
     # -----------------------
     return (
-        "I’m here to help with EMI-related questions like payment status, "
-        "payment process, or clarifications. Could you please rephrase your query?"
+        "I can help you with EMI-related questions such as payment status, "
+        "payment process, or general clarifications. "
+        "Could you please rephrase your question?"
     )
