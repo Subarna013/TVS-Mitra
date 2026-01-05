@@ -1,0 +1,21 @@
+EMI PAYMENT PROCESS – TVS CREDIT
+
+Customers can make EMI payments to TVS Credit through approved digital and banking channels such as UPI, net banking, debit cards, or authorized payment links provided by TVS Credit.
+
+When a payment is initiated, the amount is first debited from the customer’s bank or payment source. After this, the payment goes through bank settlement and internal reconciliation processes before the EMI status is updated.
+
+In most cases, EMI payments are reflected in TVS Credit systems within a few hours. However, in some situations, it may take up to 24 to 48 working hours for the payment status to update.
+
+If a customer completes the payment on the due date or just before it, the status may temporarily appear as pending until the payment is fully processed.
+
+In case of bank delays, technical issues, or high transaction volumes, there can be a short delay between successful payment and confirmation in the loan account.
+
+Customers who have successfully paid their EMI but still see the payment as due are advised not to make a duplicate payment immediately. The system usually updates the status automatically after reconciliation.
+
+If the payment status does not update even after the standard processing time, customers should contact TVS Credit support with the transaction reference or payment confirmation details.
+
+Payment confirmation messages or receipts should be retained until the EMI status is updated correctly.
+
+TVS Credit does not request customers to share sensitive information such as OTPs, PINs, or passwords during the payment process.
+
+Only use official payment links or channels shared by TVS Credit to ensure secure and accurate processing of EMI payments.
