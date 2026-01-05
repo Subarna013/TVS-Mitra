@@ -1,12 +1,22 @@
+# ---------------- Core Web ----------------
 Flask
-twilio
+gunicorn
 python-dotenv
+
+# ---------------- Telephony & Payments ----------------
+twilio
+razorpay
+
+# ---------------- Database ----------------
 SQLAlchemy
 psycopg2-binary
-razorpay
-gunicorn
+
+# ---------------- GenAI ----------------
 google-generativeai
-pandas
+
+# ---------------- NLP / RAG ----------------
+sentence-transformers==2.7.0
+
+# ---------------- ML utilities (Layer-1 fallback) ----------------
 scikit-learn
 joblib
-sentence-transformers==2.7.0
