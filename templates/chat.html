@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>TVS Mitra Chat</title>
+  <style>
+    body { font-family: Arial; margin: 20px; }
+    #chat { max-width: 600px; }
+    .msg { margin: 8px 0; }
+    .user { font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h3>TVS Mitra – EMI Assistant</h3>
+
+  <div id="chat"></div>
+
+  <input id="msg" placeholder="Ask your question…" />
+  <button onclick="send()">Send</button>
+
+  <script>
+    const phone = new URLSearchParams(window.location.search).get("phone");
+
+    function send() {
+      const text = document.getElementById("msg").value;
+      fetch("/chat/message", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ message: text, phone })
+      })
+      .then(r => r.json())
+      .then(d => {
+        document.getElementById("chat").innerHTML +=
+          `<div class="msg"><span class="user">You:</span> ${text}</div>
+           <div class="msg"><b>TVS Mitra:</b> ${d.reply}</div>`;
+      });
+    }
+  </script>
+</body>
+</html>
