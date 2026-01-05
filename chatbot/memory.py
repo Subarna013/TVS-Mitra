@@ -1,12 +1,13 @@
 # chatbot/memory.py
 
 from datetime import datetime, timedelta
+from typing import Dict, Any
 
 # =======================
 # CONFIG
 # =======================
 
-MEMORY_TTL_MINUTES = 30   # auto-expire after inactivity
+MEMORY_TTL_MINUTES = 30  # auto-expire inactive chats
 
 # =======================
 # IN-MEMORY STORE
@@ -21,15 +22,15 @@ MEMORY_TTL_MINUTES = 30   # auto-expire after inactivity
 #   }
 # }
 
-_memory_store: dict[str, dict] = {}
+_memory_store: Dict[str, Dict[str, Any]] = {}
 
 # =======================
-# HELPERS
+# INTERNAL HELPERS
 # =======================
 
 def _is_expired(entry: dict) -> bool:
     return (
-        datetime.utcnow() - entry["updated_at"]
+        datetime.utcnow() - entry.get("updated_at", datetime.utcnow())
         > timedelta(minutes=MEMORY_TTL_MINUTES)
     )
 
@@ -44,8 +45,8 @@ def _cleanup(phone: str):
 
 def get_context(phone: str) -> dict:
     """
-    Returns conversation context for the user.
-    If expired or missing, returns empty context.
+    Fetch conversation context for a user.
+    Returns empty dict if not found or expired.
     """
 
     if not phone:
@@ -56,7 +57,8 @@ def get_context(phone: str) -> dict:
 
 def update_context(phone: str, intent: str | None, message: str | None = None):
     """
-    Updates memory with latest intent and message.
+    Update conversation memory.
+    Stores only minimal, safe info.
     """
 
     if not phone:
@@ -65,12 +67,14 @@ def update_context(phone: str, intent: str | None, message: str | None = None):
     _memory_store[phone] = {
         "last_intent": intent,
         "last_message": message,
-        "updated_at": datetime.utcnow()
+        "updated_at": datetime.utcnow(),
     }
 
 def clear_context(phone: str):
     """
-    Clears memory for a user (manual reset).
+    Manually clear a user's memory.
+    Useful after payment completion or agent handoff.
     """
+
     if phone in _memory_store:
         del _memory_store[phone]
