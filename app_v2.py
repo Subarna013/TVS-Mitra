@@ -9,6 +9,8 @@ import razorpay
 from dotenv import load_dotenv
 import hmac
 import hashlib
+from flask import render_template
+from chatbot.chatbot_api import handle_chat_message
 
 # ------------------ SETUP ------------------
 load_dotenv()
@@ -190,7 +192,8 @@ def send_payment_link(customer):
 
 
 # ------------------ FLASK APP ------------------
-app = Flask(__name__)
+app = Flask(__name__, template_folder="templates")
+
 
 
 @app.before_request
@@ -450,6 +453,31 @@ def razorpay_webhook():
         return jsonify({"status": "error"}), 500
 
 
+# ================== CHATBOT UI ==================
+
+@app.route("/chat", methods=["GET"])
+def chat_page():
+    """
+    Web chatbot UI
+    Example:
+    /chat?phone=+919064476365
+    """
+    phone = request.args.get("phone", "")
+    return render_template("chat.html", phone=phone)
+
+
+@app.route("/chat/message", methods=["POST"])
+def chat_message():
+    """
+    Chatbot backend API
+    """
+    data = request.get_json(force=True)
+    message = data.get("message", "")
+    phone = data.get("phone", "")
+
+    reply = handle_chat_message(message, phone)
+
+    return jsonify({"reply": reply})
 
 
 if __name__ == "__main__":
