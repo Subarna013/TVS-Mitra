@@ -1,0 +1,12 @@
+Flask
+twilio
+python-dotenv
+SQLAlchemy
+psycopg2-binary
+razorpay
+gunicorn
+google-generativeai
+pandas
+scikit-learn
+joblib
+sentence-transformers==2.7.0
