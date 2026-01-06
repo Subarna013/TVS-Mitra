@@ -1,42 +1,25 @@
-# chatbot/ingest/ingest_policies.py
-
 import os
 from sqlalchemy import create_engine, text
-from sentence_transformers import SentenceTransformer
-from chatbot.ingest.chunker import chunk_text
 from dotenv import load_dotenv
-
-
-import os
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
-
-# =======================
-# SETUP
-# =======================
+from chatbot.ingest.chunker import chunk_text
 
 load_dotenv()
+
 DATABASE_URL = os.getenv("DATABASE_URL")
+POLICY_FOLDER = "policy_docs"
+
 engine = create_engine(DATABASE_URL)
 
-model = SentenceTransformer("paraphrase-MiniLM-L3-v2")
-
-POLICY_FOLDER = "chatbot/policy_docs"
-
-
-# =======================
-# INGESTION
-# =======================
-
 def ingest():
+    # Import ONLY here (critical)
+    from sentence_transformers import SentenceTransformer
+    model = SentenceTransformer("paraphrase-MiniLM-L3-v2")
+
     for file in os.listdir(POLICY_FOLDER):
         if not file.endswith(".txt"):
             continue
 
         path = os.path.join(POLICY_FOLDER, file)
-
         with open(path, "r", encoding="utf-8") as f:
             text_data = f.read()
 
@@ -44,17 +27,13 @@ def ingest():
         if not chunks:
             continue
 
-        embeddings = model.encode(
-            chunks,
-            batch_size=4,
-            show_progress_bar=True
-        )
+        embeddings = model.encode(chunks)
 
         with engine.begin() as conn:
-            # 🔴 Prevent duplicates
+            # Remove old chunks
             conn.execute(
                 text("DELETE FROM policy_chunks WHERE doc_name = :doc"),
-                {"doc": file}
+                {"doc": file},
             )
 
             for chunk, emb in zip(chunks, embeddings):
@@ -70,7 +49,7 @@ def ingest():
                     }
                 )
 
-    print("✅ Policy ingestion complete")
+    print("✅ Policy ingestion completed")
 
 if __name__ == "__main__":
     ingest()
