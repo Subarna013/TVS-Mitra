@@ -14,7 +14,19 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 engine = create_engine(DATABASE_URL)
-model = SentenceTransformer("all-MiniLM-L6-v2")
+_model = None
+ENABLE_RAG = os.getenv("ENABLE_RAG", "false") == "true"
+
+def fetch_policy_context(query):
+    if not ENABLE_RAG:
+        return None
+
+def get_model():
+    global _model
+    if _model is None:
+        from sentence_transformers import SentenceTransformer
+        _model = SentenceTransformer("paraphrase-MiniLM-L3-v2")
+    return _model
 
 TOP_K = 3
 SIM_THRESHOLD = 0.55
@@ -33,11 +45,10 @@ def parse_embedding(emb_str: str) -> np.ndarray:
 # FETCH CONTEXT
 # =======================
 
-def fetch_policy_context(query: str) -> str | None:
-    if not query or not query.strip():
-        return None
 
-    query_emb = normalize(model.encode(query))
+
+    model = get_model()
+    query_emb = model.encode(query)
 
     with engine.connect() as conn:
         rows = conn.execute(
