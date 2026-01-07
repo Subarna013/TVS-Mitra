@@ -76,7 +76,8 @@ def detect_intent_layer2(message: str) -> str | None:
         return None
 
     # Encode user message
-    msg_emb = _model.encode(message, convert_to_tensor=True)
+    msg_emb = get_model().encode(message, convert_to_tensor=True)
+
 
     # Compute similarity scores
     scores = {}
@@ -96,4 +97,5 @@ def detect_intent_layer2(message: str) -> str | None:
         return intent
 
     return None
+
 
