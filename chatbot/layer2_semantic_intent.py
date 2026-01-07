@@ -4,7 +4,15 @@ from sentence_transformers import SentenceTransformer, util
 # MODEL (FAST + RELIABLE)
 # =======================
 
-_model = SentenceTransformer("all-MiniLM-L6-v2")
+_model = None
+
+def get_model():
+    global _model
+    if _model is None:
+        from sentence_transformers import SentenceTransformer
+        _model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _model
+
 
 # =======================
 # CANONICAL INTENTS
@@ -88,3 +96,4 @@ def detect_intent_layer2(message: str) -> str | None:
         return intent
 
     return None
+
