@@ -3,6 +3,7 @@
 from chatbot.layer1_intent import detect_intent_layer1
 from chatbot.layer2_semantic_intent import detect_intent_layer2
 from chatbot.layer3_llm_intent import detect_intent_layer3
+from chatbot.intent_router import detect_intent
 
 from chatbot.responses import get_response
 from chatbot.rag import fetch_policy_context
@@ -82,3 +83,4 @@ def handle_chat_message(message: str, phone: str) -> str:
     update_context(phone, intent)
 
     return reply
+
